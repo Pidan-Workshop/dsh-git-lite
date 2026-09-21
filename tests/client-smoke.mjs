@@ -650,16 +650,43 @@ check('主按钮用主题强调色，普通按钮用主题边框色', () => {
 	)
 })
 
-check('日期分组的标题与提交文字用同一个 gutter（导轨对齐）', () => {
-	// 曾经标题额外加了 8px 内边距去避开越界的连接线，导致标题比提交文字右移 8px
-	const LOG =
-		"{commits:[{sha:'a1',short:'a1',subject:'x',author:'me',date:'2026-09-12T12:00:00Z',refs:[]}],hasMore:false}"
-	const tree = renderPanel((s) =>
+/** 渲染历史模式（带一条提交），供下面几条结构用例复用。 */
+const LOG_FIXTURE =
+	"{commits:[{sha:'a1',short:'a1',subject:'x',author:'me',date:'2026-09-12T12:00:00Z',refs:[]}],hasMore:false}"
+function renderHistory() {
+	return renderPanel((s) =>
 		s
 			.replace("React.useState('changes')", "React.useState('log')")
-			.replace('var [logState, setLogState] = React.useState(null)', 'var [logState, setLogState] = React.useState(' + LOG + ')')
+			.replace('var [logState, setLogState] = React.useState(null)', 'var [logState, setLogState] = React.useState(' + LOG_FIXTURE + ')')
 	)
-	const { nodes } = collect(tree)
+}
+
+check('日期分组标题不加下边框（否则会横穿导轨）', () => {
+	// 标题行若带整宽下边框，会在每个分组边界与导轨形成"十"字交叉，看起来像梯子
+	const { nodes } = collect(renderHistory())
+	const header = nodes.find((n) => {
+		const st = n.props && n.props.style
+		return st && st.position === 'sticky' && collect(n).texts.join('').indexOf('的提交') !== -1
+	})
+	assert.ok(header, '找不到分组标题行')
+	assert.equal(header.props.style.borderBottom, undefined, '标题行不应有下边框')
+	assert.equal(header.props.style.background, '#ffffff', 'sticky 需要不透明背景，否则滚动时下文透出来')
+})
+
+check('提交行是内缩圆角卡片，而不是通栏分隔线', () => {
+	// 通栏分隔线会紧贴导轨起笔，与导轨一起把左侧糊成网格
+	const { nodes } = collect(renderHistory())
+	const card = nodes.find((n) => n.props && n.props['data-git-lite-commit'] === '')
+	assert.ok(card, '找不到提交卡片')
+	assert.equal(card.props.style.borderBottom, undefined, '卡片不应有通栏下边框')
+	assert.equal(card.props.style.borderRadius, 6)
+	assert.equal(card.props.style.border, '1px solid #d0d7de')
+	assert.ok(card.props.style.margin !== undefined, '卡片需要外边距与相邻卡片分开')
+})
+
+check('日期分组的标题与提交文字用同一个 gutter（导轨对齐）', () => {
+	// 曾经标题额外加了 8px 内边距去避开越界的连接线，导致标题比提交文字右移 8px
+	const { nodes } = collect(renderHistory())
 	// 两处 gutter 的宽度必须一致，且连接线不得越出 gutter（即 width + marginLeft ≤ gutter/2）
 	const gutters = nodes.filter((n) => n.props && n.props.style && String(n.props.style.flex || '').indexOf('0 0 ') === 0 && n.props.style.position === 'relative')
 	assert.ok(gutters.length >= 2, '应至少有两个 gutter（标题行 + 提交列），实际 ' + gutters.length)

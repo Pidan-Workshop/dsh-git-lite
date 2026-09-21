@@ -124,7 +124,7 @@ dsh plugin --profile web add link:/path/to/dsh-git-lite   # 链接安装，改�
 node --check lib/index.js
 node --check lib/client.js
 node tests/host-smoke.mjs     # 34 项：porcelain v2 解析、配置、鉴权拒绝面、包含关系回退、log/show 解析、路由装配
-node tests/client-smoke.mjs   # 51 项：注册点与 disposer 持有 + 浮层避让 + 胶囊状态机 + clamp + 日期分组 + 渲染层检查
+node tests/client-smoke.mjs   # 53 项：注册点与 disposer + 浮层避让 + 胶囊状态机 + clamp + 日期分组 + 渲染层结构检查
 npm test                      # 两个都跑
 ```
 
@@ -268,8 +268,24 @@ diff 的最小可读高度，且绝不返回负数。
 - **分组标题是 sticky 的**：若用一条贯穿全高的长线，标题吸顶滑动时节点会与线错位；
   短线段跟着各自的行走，节点永远在线上
 
-节点用不透明背景色「咬断」竖线，视觉上才像串在线上。所有间距由 `18px` 的 gutter 统一
-提供给标题行与提交列，因此两者的文字起点严格对齐。
+节点用不透明背景色「咬断」竖线，视觉上才像串在线上。所有间距由 `22px` 的 gutter 统一
+提供给标题行与提交列，因此两者的文字起点严格对齐（连接线必须收在 gutter 内：
+`marginLeft + width ≤ gutter/2`，否则会压到标题文字）。
+
+**与 GitHub 观感对齐的两处结构**（都是先做错、对比截图后才改对的）：
+
+| 项 | 错的做法 | 为什么错 | 现在的做法 |
+|---|---|---|---|
+| 分组标题 | 整宽 `borderBottom` | 那条线**横穿导轨**，每个分组边界形成「十」字交叉，整列看起来像梯子 | 去掉下边框；sticky 只靠不透明背景遮蔽滚动内容 |
+| 提交之间 | 通栏 `borderBottom` 分隔线 | 分隔线紧贴导轨起笔，与导轨一起把左侧糊成网格 | 每条提交是**内缩的圆角卡片**（`border` + `borderRadius: 6` + `margin`） |
+
+### 插件样式表（`ensurePanelStyle`）
+
+插件没有 CSS 管线，绝大多数样式走内联。但有两样东西内联表达不了，只能注入一张
+带固定 id 的样式表（幂等，多实例也只注入一次）：
+
+- **旋转动画的 keyframes**（加载指示）
+- **`:hover`** —— 提交卡片的悬停底色就是靠它，并为深色模式补了 `prefers-color-scheme` 分支
 
 三个纯函数，各有单测：
 
