@@ -1,0 +1,15 @@
+# dsh-git-lite bundle patch
+#
+# 宿主半区（包根 main → lib/index.js）注入三个服务：
+#   webServer          —— 挂 /git-lite/* 同源 JSON 路由
+#   sessions           —— 由 sessionId 解析权威工作目录（客户端不传路径）
+#   workspaceRegistry  —— 校验该目录属于已注册工作区
+# 浏览器半区（package.json 的 dsh.client + exports["./client"]）随同一行被发现，
+# 注册进官方右侧栏原生标签页框架。
+#
+# config 全部可选，默认值见 lib/index.js 的 normalizeConfig()。
+- insert:
+    - id: git-lite
+      name: dsh-git-lite
+      inject: [webServer, sessions, workspaceRegistry]
+      config: {}

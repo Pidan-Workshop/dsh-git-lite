@@ -1,0 +1,43 @@
+{
+  "name": "dsh-git-lite",
+  "version": "0.1.0",
+  "description": "DSH Web 右侧栏原生 Git 面板：查看改动与行内 diff、拉取、推送（两阶段确认）、提交（可交给 Agent）、分支切换、stash。A native Git tab for the DeepSeek Harness Web right sidebar.",
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": {
+      "default": "./lib/index.js"
+    },
+    "./client": {
+      "default": "./lib/client.js"
+    },
+    "./cordis.patch.yml": "./cordis.patch.yml",
+    "./package.json": "./package.json"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "inject": [],
+      "platform": "web"
+    }
+  },
+  "files": [
+    "lib",
+    "cordis.patch.yml",
+    "README.md",
+    "LICENSE.md"
+  ],
+  "scripts": {
+    "test": "node tests/host-smoke.mjs && node tests/client-smoke.mjs"
+  },
+  "keywords": [
+    "dsh",
+    "deepseek-harness",
+    "client-plugin",
+    "git",
+    "web"
+  ],
+  "license": "MIT"
+}
