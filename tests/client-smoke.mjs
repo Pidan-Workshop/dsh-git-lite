@@ -269,4 +269,34 @@ check('成功（failures=0）后回到常规轮询间隔', () => {
 	assert.equal(chipRetryDelay(0), 6000)
 })
 
+// ── 胶囊的四种状态 ─────────────────────────────────────────────
+const { chipState } = mod.__internals
+const briefOf = (branch) => ({ branch: branch, files: [], ahead: 0, behind: 0 })
+
+check('有分支 → ready', () => {
+	assert.equal(chipState(briefOf('main'), null, 's1'), 'ready')
+	assert.equal(chipState(briefOf('explore/draft'), null, 's1'), 'ready')
+})
+
+check('尚无答复且会话已选定 → loading（不留空白）', () => {
+	assert.equal(chipState(null, null, 's1'), 'loading')
+})
+
+check('宿主权威错误 → norepo（弱化胶囊，原因在 tooltip）', () => {
+	assert.equal(chipState(null, 'this workspace is not inside a git repository', 's1'), 'norepo')
+})
+
+check('连会话都没有 → idle（不占位，而不是一直转圈）', () => {
+	assert.equal(chipState(null, null, undefined), 'idle')
+})
+
+check('status 成功但拿不到 branch → 不当作 ready', () => {
+	// 例如游离头等边界：必须落到 loading 而不是渲染一个空分支名。
+	assert.equal(chipState({ files: [] }, null, 's1'), 'loading')
+})
+
+check('权威错误优先于 loading（错误的 branch 字段不该掩盖错误）', () => {
+	assert.equal(chipState({ files: [] }, 'not a repo', 's1'), 'norepo')
+})
+
 console.log(`\n${passed} 项通过`)

@@ -123,7 +123,7 @@ dsh plugin --profile web add link:/path/to/dsh-git-lite   # 链接安装，改�
 node --check lib/index.js
 node --check lib/client.js
 node tests/host-smoke.mjs     # 24 项：porcelain v2 解析、配置归一化、鉴权拒绝面、包含关系回退、路由装配
-node tests/client-smoke.mjs   # 22 项：三个注册点 + 浮层避让几何 + 胶囊重试节奏
+node tests/client-smoke.mjs   # 28 项：三个注册点 + 浮层避让几何 + 胶囊重试节奏与状态机
 npm test                      # 两个都跑
 ```
 
@@ -136,6 +136,24 @@ npm test                      # 两个都跑
 - diff 由宿主返回 unified diff 文本，**浏览器侧解析着色** —— 宿主不做渲染，职责清晰。
 - 未跟踪文件的 diff 由宿主按行合成，不依赖 `/dev/null`（跨平台）。
 - 状态用 `git status --porcelain=v2 --branch -z`，重命名的原路径是独立 token，路径不被引号包裹。
+
+## 分支胶囊的状态机
+
+胶囊的判定抽成了纯函数 `chipState(brief, briefErr, sessionId)`，四个状态：
+
+| 状态 | 条件 | 渲染 |
+|---|---|---|
+| `ready` | `/status` 成功且带 `branch` | `⑂ <分支> *改动数 ↑ahead ↓behind` |
+| `loading` | 会话已选定，但**尚未拿到权威答复** | 转圈 + 「加载中…」，避免半秒空窗 |
+| `norepo` | 宿主给出**权威**错误（`not-a-repo` / `no-workspace` / `workspace-unknown` / `outside-workspace`） | 虚线弱化胶囊「无仓库」，原因在 tooltip |
+| `idle` | 连 sessionId 都没有 | 不占位（没有可加载的对象，不该一直转圈） |
+
+两条容易写反的边界，已各有一条测试钉住：
+
+- **`session-unknown` 不算 `norepo`。** 切会话时宿主还没把会话载入，这是瞬态；归为「未就绪」只等就绪，不显示弱化胶囊。
+- **`/status` 成功但拿不到 `branch` 不算 `ready`**（游离头等边界），落到 `loading` 而不是渲染一个空分支名。
+
+配套的重试节奏（`chipRetryDelay`）：未就绪期间 500ms 快重试，连续 12 次后回常规 6 秒节奏——没有它，胶囊会被一整个轮询周期卡住，表现为「过一会才刷出来」。
 
 ## 与第三方浮动按钮共存
 
