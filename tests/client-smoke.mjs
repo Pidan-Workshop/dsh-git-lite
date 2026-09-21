@@ -382,4 +382,26 @@ check('保留上次值 + 已有 brief 时，状态仍是 ready（不闪回 loadi
 	assert.equal(chipState(kept, v.errorText, 's1'), 'ready')
 })
 
+// ── 提交时间格式化 ─────────────────────────────────────────────
+const { formatCommitTime } = mod.__internals
+
+check('非法时间返回空串而不是 NaN', () => {
+	assert.equal(formatCommitTime(''), '')
+	assert.equal(formatCommitTime('not-a-date'), '')
+	assert.equal(formatCommitTime(undefined), '')
+})
+
+check('合法 ISO 产出 MM-DD HH:mm 形状', () => {
+	// 不断言具体小时：结果依赖运行机器的时区。
+	assert.match(formatCommitTime('2026-09-20T10:00:00+08:00'), /^\d{2}-\d{2} \d{2}:\d{2}$/)
+	assert.match(formatCommitTime('2026-01-02T03:04:05Z'), /^\d{2}-\d{2} \d{2}:\d{2}$/)
+})
+
+check('月/日/时/分都补零', () => {
+	const s = formatCommitTime('2026-01-02T03:04:05Z')
+	assert.equal(s.length, 11)
+	assert.ok(s.includes('-'), '应有日期分隔符')
+})
+
+
 console.log(`\n${passed} 项通过`)

@@ -6,7 +6,16 @@ import assert from 'node:assert/strict'
 import { realpathSync } from 'node:fs'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { apply, inject, name, normalizeConfig, parseStatus, resolveRepo } from '../lib/index.js'
+import {
+	apply,
+	inject,
+	mergeCommitFiles,
+	name,
+	normalizeConfig,
+	parseLog,
+	parseStatus,
+	resolveRepo
+} from '../lib/index.js'
 
 let passed = 0
 function check(label, fn) {
@@ -113,6 +122,94 @@ check('normalizeConfig 覆盖并拒绝非法 pullMode', () => {
 	assert.equal(normalizeConfig({ pullMode: 'merge' }).pullMode, 'merge')
 	assert.equal(normalizeConfig({ pullMode: 'nonsense' }).pullMode, 'ff-only')
 	assert.equal(normalizeConfig({ confirmTtlMs: 5000 }).confirmTtlMs, 5000)
+})
+
+// ── parseLog ───────────────────────────────────────────────────
+const US = '\u001f'
+const logLine = (sha, short, author, date, refs, subject) =>
+	[sha, short, author, date, refs, subject].join(US)
+const LOG_SAMPLE = [
+	logLine('aaa1', 'aaa1', 'Alice', '2026-09-20T10:00:00+08:00', 'HEAD -> main, tag: v1', 'feat: 加分隔条'),
+	logLine('bbb2', 'bbb2', 'Bob', '2026-09-19T09:00:00+08:00', '', 'fix: 修 clamp'),
+	logLine('ccc3', 'ccc3', 'Cara', '2026-09-18T08:00:00+08:00', 'origin/main', 'chore: 清理')
+].join('\n') + '\n'
+
+check('parseLog 解析字段与 refs', () => {
+	const r = parseLog(LOG_SAMPLE, 10)
+	assert.equal(r.commits.length, 3)
+	assert.equal(r.hasMore, false)
+	const c = r.commits[0]
+	assert.equal(c.sha, 'aaa1')
+	assert.equal(c.short, 'aaa1')
+	assert.equal(c.author, 'Alice')
+	assert.equal(c.date, '2026-09-20T10:00:00+08:00')
+	assert.deepEqual(c.refs, ['HEAD -> main', 'tag: v1'])
+	assert.equal(c.subject, 'feat: 加分隔条')
+})
+
+check('parseLog 无 refs 时给空数组而不是空字符串', () => {
+	assert.deepEqual(parseLog(LOG_SAMPLE, 10).commits[1].refs, [])
+})
+
+check('parseLog 多取一条时截断并标记 hasMore', () => {
+	// 调用方按 limit+1 取，parseLog 负责裁掉多余那条并报 hasMore
+	const r = parseLog(LOG_SAMPLE, 2)
+	assert.equal(r.commits.length, 2)
+	assert.equal(r.hasMore, true)
+	assert.equal(r.commits[1].sha, 'bbb2')
+})
+
+check('parseLog 提交信息含分隔符也不截断', () => {
+	const evil = logLine('d1', 'd1', 'Dan', '2026-09-17T00:00:00Z', '', `weird${US}subject`)
+	const r = parseLog(evil, 10)
+	assert.equal(r.commits[0].subject, `weird${US}subject`)
+})
+
+check('parseLog 空仓库输出返回空列表', () => {
+	const r = parseLog('', 10)
+	assert.deepEqual(r.commits, [])
+	assert.equal(r.hasMore, false)
+})
+
+// ── mergeCommitFiles ───────────────────────────────────────────
+check('mergeCommitFiles 合并状态与增删行数', () => {
+	const files = mergeCommitFiles(
+		'M\tsrc/a.ts\nA\tnew.ts\nD\told.ts',
+		'3\t1\tsrc/a.ts\n5\t0\tnew.ts\n0\t7\told.ts'
+	)
+	const byPath = Object.fromEntries(files.map((f) => [f.path, f]))
+	assert.equal(files.length, 3)
+	assert.deepEqual(
+		[byPath['src/a.ts'].status, byPath['src/a.ts'].additions, byPath['src/a.ts'].deletions],
+		['M', 3, 1]
+	)
+	assert.equal(byPath['new.ts'].status, 'A')
+	assert.equal(byPath['old.ts'].status, 'D')
+})
+
+check('mergeCommitFiles 重命名取第三列作为新路径', () => {
+	// name-status 对重命名是 `R100\told\tnew` 三列 —— 取 parts[1] 会得到旧路径
+	const files = mergeCommitFiles('R100\tsrc/old.ts\tsrc/new.ts', '2\t2\tsrc/new.ts')
+	assert.equal(files.length, 1)
+	assert.equal(files[0].path, 'src/new.ts')
+	assert.equal(files[0].oldPath, 'src/old.ts')
+	assert.equal(files[0].status, 'R')
+})
+
+check('mergeCommitFiles 二进制文件记为 null 而不是 0', () => {
+	const files = mergeCommitFiles('M\tlogo.png', '-\t-\tlogo.png')
+	assert.equal(files[0].additions, null)
+	assert.equal(files[0].deletions, null)
+})
+
+check('mergeCommitFiles 未匹配到状态的 numstat 行被忽略', () => {
+	const files = mergeCommitFiles('M\tsrc/a.ts', '1\t1\tsrc/a.ts\n9\t9\tghost.ts')
+	assert.equal(files.length, 1)
+	assert.equal(files[0].path, 'src/a.ts')
+})
+
+check('mergeCommitFiles 空输入返回空数组', () => {
+	assert.deepEqual(mergeCommitFiles('', ''), [])
 })
 
 // ── resolveRepo 拒绝面 ─────────────────────────────────────────
