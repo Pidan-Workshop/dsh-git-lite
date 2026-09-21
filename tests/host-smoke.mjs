@@ -124,9 +124,9 @@ function fakeCtx(overrides) {
 	)
 }
 
-const rejects = async (label, ctx, sessionId, code) => {
+const rejects = async (label, ctx, sessionId, code, clientCwd) => {
 	await assert.rejects(
-		() => resolveRepo(ctx, sessionId),
+		() => resolveRepo(ctx, sessionId, clientCwd),
 		(err) => err.code === code,
 		`${label}: 期望 code=${code}`
 	)
@@ -137,16 +137,53 @@ const rejects = async (label, ctx, sessionId, code) => {
 await rejects('缺 sessionId 被拒', fakeCtx(), '', 'bad-request')
 await rejects('未知 sessionId 被拒', fakeCtx(), 'nope', 'session-unknown')
 await rejects(
-	'会话无 cwd 被拒',
-	fakeCtx({ sessions: { get: () => ({ cwd: undefined }) } }),
+	'会话无 header.cwd 且无 clientCwd 时被拒',
+	fakeCtx({ sessions: { get: () => ({ header: {} }) } }),
 	's1',
 	'no-workspace'
 )
 await rejects(
 	'cwd 不属于任何已注册工作区被拒',
-	fakeCtx({ sessions: { get: () => ({ cwd: '/tmp' }) } }),
+	fakeCtx({
+		sessions: { get: () => ({ header: { cwd: '/tmp' } }) },
+		workspaceRegistry: { resolveByPath: async () => undefined }
+	}),
 	's1',
 	'workspace-unknown'
+)
+await rejects(
+	'clientCwd 不属于任何已注册工作区时同样被拒（兜底不是后门）',
+	fakeCtx({
+		sessions: { get: () => ({ header: {} }) },
+		workspaceRegistry: { resolveByPath: async () => undefined }
+	}),
+	's1',
+	'workspace-unknown',
+	'/tmp'
+)
+
+// 回归：曾经读的是 session.cwd（Session 类没有这个顶层属性），导致永远是
+// no-workspace。正确来源是 session.header.cwd。这里用 /tmp（存在但不是 git 仓库）
+// 证明 header.cwd 确实被读到了 —— 它会走到 git 那一步并以 not-a-repo 失败，
+// 而不是在 cwd 检查处就断掉。
+await rejects(
+	'回归：session.header.cwd 被读取（走到 git 检查而非 no-workspace）',
+	fakeCtx({
+		sessions: { get: () => ({ header: { cwd: '/tmp' } }) },
+		workspaceRegistry: { resolveByPath: async () => ({ path: '/tmp' }) }
+	}),
+	's1',
+	'not-a-repo'
+)
+await rejects(
+	'header 缺 cwd 时 clientCwd 兜底生效（同样走到 git 检查）',
+	fakeCtx({
+		sessions: { get: () => ({ header: {} }) },
+		workspaceRegistry: { resolveByPath: async () => ({ path: '/tmp' }) }
+	}),
+	's1',
+	'not-a-repo',
+	'/tmp'
 )
 
 // ── 插件装配形状 ───────────────────────────────────────────────

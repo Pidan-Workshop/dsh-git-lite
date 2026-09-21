@@ -81,9 +81,14 @@ dsh plugin --profile web add link:/path/to/dsh-git-lite   # 链接安装，改�
 
 这台插件把安全放在结构里，而不是放在字符串过滤里：
 
-1. **客户端只发 `sessionId`，从不发路径。** 工作目录由宿主侧 `ctx.sessions.get(id).cwd` 解析，再用 `ctx.workspaceRegistry.resolveByPath()` 校验它属于已注册工作区。于是「让宿主在任意目录跑 git」这条路在结构上不存在。
+1. **工作目录由宿主解析，客户端最多只能"补一个候选值"。** 权威来源是 `session.header.cwd`
+   —— 注意 `Session` 类**没有**顶层 `cwd`，创建元数据挂在 `header` 上（曾经误读 `session.cwd`，
+   结果永远是 `no-workspace`，见下方「已知坑」）。仅当宿主没有该值时，才退回客户端上报的 `cwd`。
+   **两条来源都要过同一道闸门**：`realpath` 解析 → `ctx.workspaceRegistry.resolveByPath()`
+   必须是已注册工作区 → `git rev-parse --show-toplevel`（`realpath` 后）仍须落在该工作区内。
+   所以客户端最多只能指向另一个*已注册工作区*，「让宿主在任意目录跑 git」这条路依然不存在。
 
-2. **仓库根二次校验。** `git rev-parse --show-toplevel`（realpath 后）必须仍落在该工作区内 —— 挡住「工作区是某个更大仓库的子目录」这种越界。
+2. **仓库根二次校验。** 上面第 3 道闸门挡住「工作区是某个更大仓库的子目录」这种越界。
 
 3. **force push 结构上不可能。** push 的 argv 由宿主内部构造（无参数 `git push`，只推当前分支到其上游），客户端无法注入参数；另有 `assertNoForce()` 做纵深断言。
 
@@ -117,7 +122,9 @@ dsh plugin --profile web add link:/path/to/dsh-git-lite   # 链接安装，改�
 ```sh
 node --check lib/index.js
 node --check lib/client.js
-node tests/host-smoke.mjs     # 19 项：porcelain v2 解析、配置归一化、鉴权拒绝面、路由装配
+node tests/host-smoke.mjs     # 22 项：porcelain v2 解析、配置归一化、鉴权拒绝面、路由装配
+node tests/client-smoke.mjs   # 10 项：vm 模拟 module loader，验证三个注册点
+npm test                      # 两个都跑
 ```
 
 ### 实现要点
@@ -127,6 +134,22 @@ node tests/host-smoke.mjs     # 19 项：porcelain v2 解析、配置归一化�
 - diff 由宿主返回 unified diff 文本，**浏览器侧解析着色** —— 宿主不做渲染，职责清晰。
 - 未跟踪文件的 diff 由宿主按行合成，不依赖 `/dev/null`（跨平台）。
 - 状态用 `git status --porcelain=v2 --branch -z`，重命名的原路径是独立 token，路径不被引号包裹。
+
+## 已知坑与排查
+
+真机首跑踩到的两个坑，都已修复并补了回归测试，记在这里免得重犯：
+
+| 症状 | 根因 | 修法 |
+|---|---|---|
+| 面板显示 `this session has no working directory` | **`Session` 类没有顶层 `cwd`**。创建元数据挂在 `session.header.cwd` 上，所以 `session.cwd` 恒为 `undefined` | 读 `session.header.cwd`，并加 `clientCwd` 兜底（同样过工作区闸门） |
+| 输入框上方没有分支胶囊 | **下游症状**，不是独立 bug。`BranchChip` 在 `/status` 失败时返回 `null`，所以只要 cwd 解析失败，胶囊就静默消失 | 修好 cwd 即同时消失 |
+
+排查顺序建议：
+
+1. `POST /git-lite/status` 带一个假 sessionId —— 若返回 `session-unknown`，说明**宿主半区已加载且路由正常**；若 404，说明插件没被加载（查 profile 的 `cordis.patch.yml`）。
+2. 面板里的错误横幅就是宿主返回的 `error.message`，`error.code` 决定它属于哪一类（`no-workspace` / `workspace-unknown` / `not-a-repo` / `outside-workspace`）。
+3. 浏览器 console 里搜 `dsh-git-lite` —— 注册失败会打 `sidebar tab registration failed`。
+4. **改了 `lib/index.js` 必须重启 `dsh web`**（宿主半区在进程启动时加载）；只改 `lib/client.js` 刷新页面即可。
 
 ## License
 
