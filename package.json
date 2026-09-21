@@ -1,7 +1,7 @@
 {
   "name": "dsh-git-lite",
   "version": "0.1.0",
-  "description": "DSH Web 右侧栏原生 Git 面板：查看改动与行内 diff、拉取、推送（两阶段确认）、提交（可交给 Agent）、分支切换、stash。A native Git tab for the DeepSeek Harness Web right sidebar.",
+  "description": "DSH Web 右侧栏的轻量 Git 面板，直接调用本机 git：改动、行内 diff、拉取、两阶段确认推送、提交、分支、stash。A lite Git tab for the DeepSeek Harness Web sidebar, driven by your local git.",
   "type": "module",
   "main": "lib/index.js",
   "exports": {
@@ -39,5 +39,17 @@
     "git",
     "web"
   ],
+  "author": {
+    "name": "Pidan Workshop",
+    "url": "https://github.com/Pidan-Workshop"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Pidan-Workshop/dsh-git-lite.git"
+  },
+  "bugs": {
+    "url": "https://github.com/Pidan-Workshop/dsh-git-lite/issues"
+  },
+  "homepage": "https://github.com/Pidan-Workshop/dsh-git-lite",
   "license": "MIT"
 }
