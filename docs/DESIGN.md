@@ -1,7 +1,7 @@
 # dsh-git-lite 设计笔记
 
 本文件是**实现者文档**：设计取舍、踩过的坑、以及为什么代码长成现在这样。
-面向使用者的安装与使用说明见 [README](../README.md)。
+面向使用者的安装与使用说明见 [README](https://github.com/Pidan-Workshop/dsh-git-lite#readme)。
 
 ## 设计目标与定位
 

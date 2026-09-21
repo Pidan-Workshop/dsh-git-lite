@@ -31,7 +31,16 @@ A lite Git tab for the DeepSeek Harness Web sidebar, driven by your local git: c
   本插件在 **DSH `0.1.5-rc.2`** 上开发与验证。
 - 本机有 `git`（面板直接调用它）。
 
-### 方式 A：从源码安装（推荐）
+### 方式 A：从 npm 安装（推荐）
+
+```sh
+dsh plugin --profile web add dsh-git-lite
+```
+
+> `dsh plugin` 把参数转发给 pnpm，因此需要 PATH 上有 **pnpm**；没有会报
+> `pnpm not found on PATH`，那就改用方式 B。
+
+### 方式 B：从源码安装（不需要 pnpm）
 
 ```sh
 git clone https://github.com/Pidan-Workshop/dsh-git-lite.git
@@ -48,15 +57,11 @@ bash install.sh
 DSH_PROFILE_DIR=~/.dsh/profiles/dev bash install.sh
 ```
 
-### 方式 B：官方 CLI（需要 pnpm）
+在源码上改代码、想让改动立刻在页面里生效，用链接安装：
 
 ```sh
-dsh plugin --profile web add link:/path/to/dsh-git-lite   # 链接安装：改完刷新页面即生效
-dsh plugin --profile web add dsh-git-lite                 # npm 发布后
+dsh plugin --profile web add link:/path/to/dsh-git-lite
 ```
-
-> `dsh plugin` 底层转发给 pnpm，PATH 上没有 pnpm 时会报 `pnpm not found on PATH`。
-> 只想快速用起来，用方式 A。
 
 ### 装完重启
 
@@ -64,11 +69,19 @@ dsh plugin --profile web add dsh-git-lite                 # npm 发布后
 
 ### 卸载
 
+用 CLI 装的：
+
+```sh
+dsh plugin --profile web remove dsh-git-lite
+```
+
+用脚本装的：
+
 ```sh
 bash uninstall.sh
 ```
 
-移除包本体与 `cordis.patch.yml` 里的加载器条目，并保留 `.bak-git-lite` 备份。
+后者移除包本体与 `cordis.patch.yml` 里的加载器条目，并保留 `.bak-git-lite` 备份。
 
 > ⚠️ 在 profile 里跑 `pnpm install` 会清理手工放置的包，重装依赖后请重跑 `install.sh`。
 
@@ -168,7 +181,8 @@ npm test                      # host 冒烟 40 项 + client 冒烟 49 项
 两个冒烟测试都不需要 DSH 运行时。
 
 设计取舍、安全模型细节、以及真机迭代踩过的坑（含每个 bug 的根因与回归测试），
-都在 **[docs/DESIGN.md](docs/DESIGN.md)**。
+都在 **[docs/DESIGN.md](https://github.com/Pidan-Workshop/dsh-git-lite/blob/main/docs/DESIGN.md)**
+（npm 页面上相对链接会失效，所以这里用绝对地址）。
 
 ## 安全
 

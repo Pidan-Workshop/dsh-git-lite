@@ -30,15 +30,21 @@
     "LICENSE.md"
   ],
   "scripts": {
-    "test": "node tests/host-smoke.mjs && node tests/client-smoke.mjs"
+    "test": "node tests/host-smoke.mjs && node tests/client-smoke.mjs",
+    "prepublishOnly": "npm test"
   },
   "keywords": [
     "dsh",
     "deepseek-harness",
     "client-plugin",
     "git",
-    "web"
+    "web",
+    "git-ui",
+    "devtools"
   ],
+  "engines": {
+    "node": ">=18"
+  },
   "author": {
     "name": "Pidan Workshop",
     "url": "https://github.com/Pidan-Workshop"
@@ -51,5 +57,8 @@
     "url": "https://github.com/Pidan-Workshop/dsh-git-lite/issues"
   },
   "homepage": "https://github.com/Pidan-Workshop/dsh-git-lite",
+  "publishConfig": {
+    "access": "public"
+  },
   "license": "MIT"
 }
