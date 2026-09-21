@@ -693,17 +693,30 @@ check('日期分组的标题与提交文字用同一个 gutter（导轨对齐）
 	const widths = new Set(gutters.map((g) => g.props.style.flex))
 	assert.equal(widths.size, 1, 'gutter 宽度不一致：' + [...widths].join(' / '))
 	const gutterPx = Number([...widths][0].split(' ')[2].replace('px', ''))
+	let leftArms = 0
+	let rightArms = 0
 	for (const g of gutters) {
 		for (const child of g.children) {
 			const st = child && child.props && child.props.style
-			if (!st || st.marginLeft === undefined || st.width === undefined) continue
-			if (typeof st.width !== 'number') continue
+			if (!st || typeof st.width !== 'number') continue
+			// 横向臂：由 marginLeft 或 marginRight 抵消定位，两端都不得越出 gutter 中线
+			const offset = st.marginLeft !== undefined ? st.marginLeft : st.marginRight
+			if (offset === undefined) continue
 			assert.ok(
-				st.marginLeft + st.width <= gutterPx / 2 + 0.001,
-				'gutter 内的线段越界：marginLeft=' + st.marginLeft + ' width=' + st.width
+				offset + st.width <= gutterPx / 2 + 0.001,
+				'gutter 内的线段越界：offset=' + offset + ' width=' + st.width
 			)
+			// 只把「1px 高的水平臂」计入左右对称检查：
+			// 导轨（width 1）与节点（height 9）也有 marginLeft，不该被算成右臂
+			if (st.height === 1) {
+				if (st.marginLeft !== undefined) rightArms += 1
+				if (st.marginRight !== undefined) leftArms += 1
+			}
 		}
 	}
+	// 节点应为「—◯—」：左右各一条对称横线（只画右边会不像 GitHub）
+	assert.equal(rightArms, leftArms, '节点左右横线数量应相等：left=' + leftArms + ' right=' + rightArms)
+	assert.ok(leftArms >= 1, '节点缺少左侧横线')
 })
 
 console.log(`\n${passed} 项通过`)
