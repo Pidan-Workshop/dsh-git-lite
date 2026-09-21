@@ -637,11 +637,22 @@ check('主题色走 DSH 令牌（而不是自己维护明暗两套色板）', ()
 
 	const commit = findExact('提交')
 	assert.ok(commit, '找不到「提交」按钮')
-	assert.equal(commit.props.style.color, '#fff')
-	// 主按钮底色必须取品牌令牌并带兜底，而不是写死色值
+	// 文字色必须用配对的前景令牌，而不是硬编码 #fff：
+	// 白字在深色主题的蓝色填充上只有 2.66:1（DSH 自己的发送按钮就是硬编码 #fff）
 	assert.ok(
-		commit.props.style.background.indexOf('--dsw-alias-brand-primary') !== -1,
-		'主按钮底色应取品牌令牌，实际：' + commit.props.style.background
+		String(commit.props.style.color).indexOf('--dsw-alias-label-primary-foreground') !== -1,
+		'主按钮文字应取 label-primary-foreground，实际：' + commit.props.style.color
+	)
+	// 主按钮底色必须取**蓝色填充**令牌并带兜底。
+	// 回归：曾经用 --dsw-alias-brand-primary —— 那是品牌「前景」色（浅色近黑、
+	// 深色近白），当填充用会在深色主题下变成白底白字（看起来是个空白方块）。
+	assert.ok(
+		commit.props.style.background.indexOf('--dsw-alias-button-info-fill') !== -1,
+		'主按钮底色应取 button-info-fill，实际：' + commit.props.style.background
+	)
+	assert.ok(
+		commit.props.style.background.indexOf('brand-primary') === -1,
+		'不得再使用 brand-primary 作为填充色，实际：' + commit.props.style.background
 	)
 	assert.ok(
 		commit.props.style.background.indexOf('var(') === 0,
