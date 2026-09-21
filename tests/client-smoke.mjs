@@ -149,15 +149,22 @@ check('注册了 tab 标题到 sidebar.right.pane.tab.title', () => {
 	assert.equal(hit[0].opts.key, 'git-lite')
 })
 
-check('注册了分支胶囊到 conversation.input.dock', () => {
-	const hit = slotRegistrations.filter((r) => r.opts.name === 'conversation.input.dock')
+check('注册了分支胶囊到会话头部右对齐区（而非输入框上方）', () => {
+	const hit = slotRegistrations.filter(
+		(r) => r.opts.name === 'conversation.session.header.utilities'
+	)
 	assert.equal(hit.length, 1)
-	assert.equal(hit[0].opts.id, 'git-lite-branch-chip')
+	assert.equal(hit[0].opts.id, 'git-lite-header-branch')
 	const injected = hit[0].opts.inject()
 	assert.equal(typeof injected.openTab, 'function')
 	// 胶囊点击应当打开 git-lite 这个 kind
 	injected.openTab()
 	assert.deepEqual(openedTabs, ['git-lite'])
+})
+
+check('不再往 conversation.input.dock 注册（避免额外占一行）', () => {
+	const hit = slotRegistrations.filter((r) => r.opts.name === 'conversation.input.dock')
+	assert.equal(hit.length, 0)
 })
 
 check('两处 ctx.inject 的依赖名都真实存在', () => {
@@ -173,7 +180,11 @@ check('两处 ctx.inject 的依赖名都真实存在', () => {
 })
 
 check('未使用任何不存在的槽位名', () => {
-	const known = ['sidebar.right.pane.tab', 'sidebar.right.pane.tab.title', 'conversation.input.dock']
+	const known = [
+		'sidebar.right.pane.tab',
+		'sidebar.right.pane.tab.title',
+		'conversation.session.header.utilities'
+	]
 	for (const seat of slotSeats) {
 		assert.ok(known.includes(seat), `未知槽位 ${seat}`)
 	}

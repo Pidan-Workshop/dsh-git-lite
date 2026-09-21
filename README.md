@@ -14,7 +14,7 @@ A native Git tab for the DeepSeek Harness Web right sidebar — changes, inline 
 | **提交** | 暂存 / 取消暂存（也可勾「全部暂存」）；两条提交路径见下 |
 | **分支** | 下拉切换本地分支，脏工作区冲突时给出明确提示 |
 | **暂存** | `git stash push` / `git stash pop` |
-| **入口** | 右侧栏「Git」标签页 + 工作区启动卡 + 输入框上方的分支胶囊（显示分支名、改动数、ahead/behind） |
+| **入口** | 右侧栏「Git」标签页 + 工作区启动卡 + **会话头部右对齐区的分支胶囊**（显示分支名、改动数、ahead/behind） |
 
 界面语言跟随 DSH 的 locale（中文 / English），明暗主题跟随系统。
 
@@ -46,7 +46,7 @@ dsh plugin --profile web add link:/path/to/dsh-git-lite   # 链接安装，改�
 
 ### 都要重启
 
-装完**重启 `dsh web`** 才生效。然后打开右侧栏，切到 **Git** 标签页（或点输入框上方带分支名的胶囊）。
+装完**重启 `dsh web`** 才生效。然后打开右侧栏，切到 **Git** 标签页（或点会话头部右侧那个带分支名的胶囊）。
 
 > `pnpm install` 会清理手工放置的包，重装依赖后请重跑 `install.sh`。
 
@@ -123,14 +123,16 @@ dsh plugin --profile web add link:/path/to/dsh-git-lite   # 链接安装，改�
 node --check lib/index.js
 node --check lib/client.js
 node tests/host-smoke.mjs     # 22 项：porcelain v2 解析、配置归一化、鉴权拒绝面、路由装配
-node tests/client-smoke.mjs   # 18 项：三个注册点 + 浮层避让几何
+node tests/client-smoke.mjs   # 19 项：三个注册点 + 浮层避让几何
 npm test                      # 两个都跑
 ```
 
 ### 实现要点
 
 - **宿主**：`inject: [webServer, sessions, workspaceRegistry]`，在 `ctx.webServer` 上挂 `/git-lite/*` 同源 JSON 路由；`llm` 与 `agentDefaultModel` 走**可选注入**，缺了它们插件其余功能照常工作。
-- **浏览器**：`window.__ModuleLoader__.load({ id, factory })`，导出 `apply(ctx)` / `inject`。三个注册点：`sidebarRightTabs.register`（tab 类型）、`sidebar.right.pane.tab`（tab 主体，keyed seat，key = tab type id）、`conversation.input.dock`（分支胶囊）。
+- **浏览器**：`window.__ModuleLoader__.load({ id, factory })`，导出 `apply(ctx)` / `inject`。三个注册点：`sidebarRightTabs.register`（tab 类型）、`sidebar.right.pane.tab`（tab 主体，keyed seat，key = tab type id）、`conversation.session.header.utilities`（分支胶囊）。
+
+  关于入口位置：胶囊曾放在 `conversation.input.dock`（输入框上方），但那里会额外占一行高度；改到会话头部右对齐的 `utilities` 区后，复用了头部本来空着的右侧空间。头部四个 seat 的分工是：`actions` 紧邻标题、`utilities` 右对齐、`corner` 最右角落且**仅容一个**控件（已被右侧栏的收回按钮占用）、`lineage` 替换面包屑标题。想改成紧邻标题，把槽位名换成 `conversation.session.header.actions` 即可。
 - diff 由宿主返回 unified diff 文本，**浏览器侧解析着色** —— 宿主不做渲染，职责清晰。
 - 未跟踪文件的 diff 由宿主按行合成，不依赖 `/dev/null`（跨平台）。
 - 状态用 `git status --porcelain=v2 --branch -z`，重命名的原路径是独立 token，路径不被引号包裹。
@@ -166,7 +168,7 @@ npm test                      # 两个都跑
 | 症状 | 根因 | 修法 |
 |---|---|---|
 | 面板显示 `this session has no working directory` | **`Session` 类没有顶层 `cwd`**。创建元数据挂在 `session.header.cwd` 上，所以 `session.cwd` 恒为 `undefined` | 读 `session.header.cwd`，并加 `clientCwd` 兜底（同样过工作区闸门） |
-| 输入框上方没有分支胶囊 | **下游症状**，不是独立 bug。`BranchChip` 在 `/status` 失败时返回 `null`，所以只要 cwd 解析失败，胶囊就静默消失 | 修好 cwd 即同时消失 |
+| 分支胶囊不出现 | **下游症状**，不是独立 bug。`BranchChip` 在 `/status` 失败时返回 `null`，所以只要 cwd 解析失败，胶囊就静默消失 | 修好 cwd 即同时消失 |
 
 排查顺序建议：
 
