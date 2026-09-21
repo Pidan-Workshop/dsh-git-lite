@@ -273,6 +273,48 @@ check('成功（failures=0）后回到常规轮询间隔', () => {
 	assert.equal(chipRetryDelay(0), 6000)
 })
 
+// ── 列表 / diff 分隔条的 clamp ─────────────────────────────────
+// clamp 边界写错会让某一侧塌成 0 高度，看起来像"内容不见了"。
+const { clampListHeight } = mod.__internals
+const BODY = 600
+const LIST_MIN = 56
+const DIFF_MIN = 90
+
+check('正常区间内按指针位置分配', () => {
+	assert.equal(clampListHeight(300, BODY, LIST_MIN, DIFF_MIN), 300)
+})
+
+check('低于列表最小值时钳到最小值', () => {
+	assert.equal(clampListHeight(10, BODY, LIST_MIN, DIFF_MIN), LIST_MIN)
+	assert.equal(clampListHeight(0, BODY, LIST_MIN, DIFF_MIN), LIST_MIN)
+	assert.equal(clampListHeight(-40, BODY, LIST_MIN, DIFF_MIN), LIST_MIN)
+})
+
+check('高于上限时钳到「容器高 − diff 最小值」', () => {
+	// 600 - 90 = 510，保证 diff 至少有 90px
+	assert.equal(clampListHeight(9999, BODY, LIST_MIN, DIFF_MIN), BODY - DIFF_MIN)
+	assert.equal(clampListHeight(511, BODY, LIST_MIN, DIFF_MIN), BODY - DIFF_MIN)
+})
+
+check('恰好落在边界上不抖动', () => {
+	assert.equal(clampListHeight(LIST_MIN, BODY, LIST_MIN, DIFF_MIN), LIST_MIN)
+	assert.equal(clampListHeight(BODY - DIFF_MIN, BODY, LIST_MIN, DIFF_MIN), BODY - DIFF_MIN)
+})
+
+check('容器矮到放不下两个最小值时，优先保住 diff 且不返回负数', () => {
+	// 100 < 56 + 90：max = 10 < listMin → 返回 10（列表让位，diff 保 90）
+	assert.equal(clampListHeight(500, 100, LIST_MIN, DIFF_MIN), 10)
+	// 极端：容器比 diff 最小值还矮 → 返回 0 而不是负数
+	assert.equal(clampListHeight(500, 40, LIST_MIN, DIFF_MIN), 0)
+})
+
+check('结果是整数（避免逐帧小数导致布局抖动）', () => {
+	assert.equal(clampListHeight(300.7, BODY, LIST_MIN, DIFF_MIN), 301)
+	assert.ok(Number.isInteger(clampListHeight(300.4, 601, LIST_MIN, DIFF_MIN)))
+})
+
+
+
 // ── 胶囊的四种状态 ─────────────────────────────────────────────
 const { chipState } = mod.__internals
 const briefOf = (branch) => ({ branch: branch, files: [], ahead: 0, behind: 0 })

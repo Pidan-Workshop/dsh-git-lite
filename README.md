@@ -123,7 +123,7 @@ dsh plugin --profile web add link:/path/to/dsh-git-lite   # 链接安装，改�
 node --check lib/index.js
 node --check lib/client.js
 node tests/host-smoke.mjs     # 24 项：porcelain v2 解析、配置归一化、鉴权拒绝面、包含关系回退、路由装配
-node tests/client-smoke.mjs   # 32 项：注册点 + 浮层避让几何 + 胶囊状态机与重试节奏
+node tests/client-smoke.mjs   # 38 项：注册点 + 浮层避让 + 胶囊状态机 + 分隔条 clamp
 npm test                      # 两个都跑
 ```
 
@@ -166,6 +166,37 @@ npm test                      # 两个都跑
 另有一条容易写反的边界：**`/status` 成功但拿不到 `branch` 不算 `ready`**（游离头等），落到 `loading` 而不是渲染一个空分支名。
 
 配套的重试节奏（`chipRetryDelay`）：未就绪期间 500ms 快重试，连续 12 次后回常规 6 秒节奏——没有它，胶囊会被一整个轮询周期卡住，表现为「过一会才刷出来」。
+
+## 面板布局
+
+从上到下五段，固定段与弹性段分开：
+
+| 段 | 伸缩 | 说明 |
+|---|---|---|
+| 分支下拉 + ahead/behind | `0 0 auto` | 固定 |
+| 操作条（拉取/抓取/推送/刷新/stash） | `0 0 auto` | 固定 |
+| 提示行（错误/成功） | `0 0 auto` | 固定，仅在有内容时出现 |
+| **变更列表 ↔ diff** | `1 1 auto` | **中间用可拖拽分隔条分配** |
+| 提交区 | `0 0 auto` | 固定，含避开第三方浮层的动态内缩 |
+
+### 列表 / diff 的高度分配
+
+最初是 `列表 flex:1` : `diff flex:2` —— 结果 **diff 固定吃掉 2/3**，列表被压到只剩两行，
+这是设计缺陷而不是取舍。现在：
+
+- **默认两侧均分**（`1 1 0` : `1 1 0`），列表不再被压扁
+- **分隔条可拖拽**分配上下面积（6px 高、`cursor: row-resize`），双击复位到默认比例
+- 用**指针捕获**（`setPointerCapture`）而不是 window 监听器，指针移出分隔条也不会丢事件
+- 高度**只存列表那一侧**（`localStorage["dsh-git-lite:list-height"]`）。只存一个值，
+  diff 自动吃掉剩余空间，容器尺寸变化时不会出现"两侧之和超过容器"
+- 拖拽结束才写一次 localStorage（不在 `pointermove` 里每帧写）
+- 窗口变矮时用 `resize` 重新 clamp，防止列表溢出把 diff 挤没
+- 既保留无障碍语义（`role="separator"` / `aria-orientation`），也留了 `title` 提示
+
+夹取逻辑抽成纯函数 `clampListHeight(next, bodyHeight, listMin, diffMin)` 并单测 6 项——
+**clamp 边界写错会让某一侧塌成 0 高度，看起来像"内容不见了"**，这是真机上最难自查的一类布局
+bug，所以它值得有测试钉住。空间实在不够时（`容器高 < 列表最小值 + diff 最小值`）优先保住
+diff 的最小可读高度，且绝不返回负数。
 
 ## 与第三方浮动按钮共存
 
