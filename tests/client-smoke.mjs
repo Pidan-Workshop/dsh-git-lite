@@ -167,9 +167,12 @@ check('不再往 conversation.input.dock 注册（避免额外占一行）', () 
 	assert.equal(hit.length, 0)
 })
 
-check('两处 ctx.inject 的依赖名都真实存在', () => {
-	assert.equal(injectedDeps.length, 2)
+check('三处 ctx.inject 的依赖名都真实存在，且各自只声明所需服务', () => {
+	// 拆成三块是刻意的：注册互不连累，且每块依赖最小化（越早订阅 seat 声明越好）。
+	assert.equal(injectedDeps.length, 3)
+	const seen = []
 	for (const deps of injectedDeps) {
+		seen.push(deps.join(','))
 		for (const d of deps) {
 			assert.ok(
 				['sidebarRightTabs', 'slots', 'sessions', 'locale', 'sidebarRight'].includes(d),
@@ -177,6 +180,7 @@ check('两处 ctx.inject 的依赖名都真实存在', () => {
 			)
 		}
 	}
+	assert.deepEqual(seen, ['sidebarRightTabs', 'slots,sessions,locale', 'slots,sessions,locale,sidebarRight'])
 })
 
 check('未使用任何不存在的槽位名', () => {
