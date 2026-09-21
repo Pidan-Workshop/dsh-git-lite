@@ -123,7 +123,7 @@ dsh plugin --profile web add link:/path/to/dsh-git-lite   # 链接安装，改�
 node --check lib/index.js
 node --check lib/client.js
 node tests/host-smoke.mjs     # 22 项：porcelain v2 解析、配置归一化、鉴权拒绝面、路由装配
-node tests/client-smoke.mjs   # 10 项：vm 模拟 module loader，验证三个注册点
+node tests/client-smoke.mjs   # 18 项：三个注册点 + 浮层避让几何
 npm test                      # 两个都跑
 ```
 
@@ -134,6 +134,30 @@ npm test                      # 两个都跑
 - diff 由宿主返回 unified diff 文本，**浏览器侧解析着色** —— 宿主不做渲染，职责清晰。
 - 未跟踪文件的 diff 由宿主按行合成，不依赖 `/dev/null`（跨平台）。
 - 状态用 `git status --porcelain=v2 --branch -z`，重命名的原路径是独立 token，路径不被引号包裹。
+
+## 与第三方浮动按钮共存
+
+其它插件常往视口右下角钉一个 `position: fixed` 的悬浮按钮（例如 `dsh-godot-play`
+的「▶ 试玩游戏」：`right: 14px; bottom: 14px; z-index: 2147483000`）。本插件的提交区
+恰好也在面板底部，两者可能撞上。
+
+**不做硬编码留白**，而是实测后按需让位（`useOverlayInset`）：
+
+- 只检查 `document.body` 的**直接子元素**中 `position` 计算值为 `fixed` 的元素 ——
+  悬浮按钮几乎总是挂在 body 下，这样避免遍历整棵树并逐节点取 computed style
+- 横向用**按钮的实际视觉跨度**（子元素并集），不是容器宽度。容器是 `flex-wrap`
+  的整行、宽度永远撑满面板；按容器算的话，全屏时按钮明明挤在左边、右侧全是空白，
+  也会误判为相交
+- 高度超过视口 40% 的浮层跳过：那是整块面板而不是悬浮按钮，盖住时本来也点不到
+- 纵向基准是**提交区的外底边**，不是操作行自身。给提交区加 `padding-bottom` 不会
+  移动这条边，所以测量与结果不会互相反馈、不会振荡
+- 触发时机：挂载、窗口 resize、`document.body` 的 childList 变化（`MutationObserver`，
+  覆盖「浮层后出现 / 后消失」）
+- 内缩上限 240px，避免全屏浮层把操作区挤没
+
+净效果：全屏宽面板下按钮在左边、浮层在右边，**不让位**；侧边栏收窄到按钮换行铺满
+宽度、真的会被压住时才让位。几何判断抽成了纯函数 `computeOverlayInset` 并单测
+（8 项），因为这段逻辑只在浏览器里生效、却最容易写错。
 
 ## 已知坑与排查
 

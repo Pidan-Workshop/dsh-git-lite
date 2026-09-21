@@ -179,4 +179,62 @@ check('未使用任何不存在的槽位名', () => {
 	}
 })
 
+// ── 避开第三方固定浮层的几何判断 ───────────────────────────────
+const { computeOverlayInset } = mod.__internals
+
+/** 一个操练基准：视口高 900，提交区底边 900，按钮横跨 16–290，上限 240。 */
+function geo(overlays) {
+	return computeOverlayInset({
+		panelBottom: 900,
+		rowLeft: 16,
+		rowRight: 290,
+		viewportHeight: 900,
+		maxInset: 240,
+		overlays
+	})
+}
+
+check('没有浮层时不让位', () => {
+	assert.equal(geo([]), 0)
+})
+
+check('浮层在按钮右侧（全屏场景）不让位 —— 这是"智能"的关键', () => {
+	// godot-play 的悬浮按钮：right:14px，宽约 120 → 左边界 766。按钮止于 290。
+	assert.equal(geo([{ top: 830, left: 766, right: 886, height: 44 }]), 0)
+})
+
+check('浮层压住按钮且横向相交时，按重叠高度让位', () => {
+	// 浮层顶边 850，提交区底边 900 → 需要 50px。
+	assert.equal(geo([{ top: 850, left: 200, right: 320, height: 44 }]), 50)
+})
+
+check('取多个浮层中最大的重叠高度', () => {
+	assert.equal(
+		geo([
+			{ top: 870, left: 100, right: 200, height: 30 },
+			{ top: 840, left: 250, right: 300, height: 44 }
+		]),
+		60
+	)
+})
+
+check('浮层顶边在提交区底边之下（未压到）不让位', () => {
+	assert.equal(geo([{ top: 900, left: 100, right: 200, height: 44 }]), 0)
+})
+
+check('整块面板不参与避让（高度 > 视口 40%）', () => {
+	// 高度 400 > 900*0.4，即便相交也跳过。
+	assert.equal(geo([{ top: 500, left: 100, right: 600, height: 400 }]), 0)
+})
+
+check('内缩量被 maxInset 钳制', () => {
+	// 重叠 880，但上限 240。
+	assert.equal(geo([{ top: 20, left: 100, right: 200, height: 100 }]), 240)
+})
+
+check('横向刚好相切（不重叠）不让位', () => {
+	// 浮层左边界正好等于按钮右边界 → 重叠为 0。
+	assert.equal(geo([{ top: 850, left: 290, right: 400, height: 44 }]), 0)
+})
+
 console.log(`\n${passed} 项通过`)
