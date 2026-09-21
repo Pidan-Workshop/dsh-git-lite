@@ -522,4 +522,161 @@ check('formatDayLabel 本地化且非法输入不抛', () => {
 })
 
 
+// ── 渲染层检查 ─────────────────────────────────────────────────
+// 教训：Btn 曾把 props.t（i18n 字典）当成 theme 用，`t.fg` / `t.accent` / `t.border`
+// 全是 undefined —— 主按钮成了「白字无底色」、普通按钮的 `1px solid undefined`
+// 是非法 CSS、整条声明被丢弃后回退成浏览器默认边框。这是纯 UI 症状，
+// 逻辑测试全绿也照样漏掉，所以补一层渲染检查。
+
+/** 用会递归调用子组件的 h() 把面板渲成一棵树（可 patch 源码以切换状态）。 */
+function renderPanel(patch) {
+	const source = patch === undefined ? src : patch(src)
+	let loaded = null
+	const captured = {}
+	const box = {
+		window: { __ModuleLoader__: { load: (d) => { loaded = d } }, localStorage: null },
+		navigator: { language: 'zh-CN' },
+		console: { log: () => {}, warn: () => {}, error: () => {} },
+		setInterval: () => 0,
+		clearInterval: () => {},
+		setTimeout: () => 0,
+		clearTimeout: () => {},
+		fetch: () => Promise.resolve({ json: () => Promise.resolve({ ok: true, value: { branch: 'main', files: [] } }) })
+	}
+	box.globalThis = box
+	vm.createContext(box)
+	vm.runInContext(source, box)
+	function h(type, props) {
+		const kids = [].slice.call(arguments, 2)
+		if (typeof type === 'function') return type(Object.assign({}, props, { children: kids }))
+		return { type: type, props: props || {}, children: kids }
+	}
+	const react = {
+		createElement: h,
+		useState: (i) => [typeof i === 'function' ? i() : i, () => {}],
+		useEffect: () => {},
+		useMemo: (f) => f(),
+		useRef: (i) => ({ current: i }),
+		useSyncExternalStore: (_s, g) => g()
+	}
+	const sc = {
+		sessions: {
+			list: { subscribe: () => () => {}, getSnapshot: () => ({ current: 's1', byId: { s1: { cwd: '/tmp' } } }) }
+		},
+		locale: { getLocale: () => ({ active: 'zh' }), subscribe: () => () => {} },
+		sidebarRight: { openTab: () => {} },
+		sidebarRightTabs: { register: () => () => {} },
+		slots: {
+			inject: (_s, f) => f(),
+			register: (o, c) => {
+				captured[o.name] = c
+				return () => {}
+			}
+		}
+	}
+	const m = loaded.factory((name) => {
+		if (name === 'react') return react
+		throw new Error(name)
+	})
+	m.apply({
+		locale: { getLocale: () => ({ active: 'zh' }), subscribe: () => () => {} },
+		inject: (_d, cb) => cb(sc),
+		effect: (f) => {
+			f()
+		}
+	})
+	return captured['sidebar.right.pane.tab']({ sessions: sc.sessions, locale: sc.locale })
+}
+
+/** 收集树里所有元素节点与文本（数组作为单个子节点时要展开）。 */
+function collect(node) {
+	const nodes = []
+	const texts = []
+	;(function walk(n) {
+		if (typeof n === 'string') {
+			texts.push(n)
+			return
+		}
+		if (Array.isArray(n)) {
+			n.forEach(walk)
+			return
+		}
+		if (!n || typeof n !== 'object') return
+		nodes.push(n)
+		;(n.children || []).forEach(walk)
+	})(node)
+	return { nodes: nodes, texts: texts }
+}
+
+check('渲染出的样式里没有 undefined（曾把字典当主题用）', () => {
+	// 这条测试若早点存在，Btn 那个「白字无底色」的 bug 会在提交前就被拦住
+	const { nodes } = collect(renderPanel())
+	const bad = []
+	for (const n of nodes) {
+		const style = n.props && n.props.style
+		if (!style) continue
+		for (const k of Object.keys(style)) {
+			const v = style[k]
+			if (v === undefined || (typeof v === 'string' && v.indexOf('undefined') !== -1)) {
+				bad.push(k + '=' + String(v))
+			}
+		}
+	}
+	assert.equal(bad.length, 0, '出现 undefined 样式：' + bad.slice(0, 5).join(', '))
+})
+
+check('主按钮用主题强调色，普通按钮用主题边框色', () => {
+	// 沙箱里没有 matchMedia，useDark() 返回 false → 浅色主题
+	const LIGHT_ACCENT = '#0969da'
+	const LIGHT_BORDER = '#d0d7de'
+	const { nodes } = collect(renderPanel())
+	const buttons = nodes.filter((n) => n.type === 'button')
+	// 注意：树里靠前的 button 是分段控件的「变更/历史」，所以必须按文案找，
+	// 不能按下标猜。子串匹配用于带 emoji 的文案（'✨ 生成信息'）。
+	const find = (label) =>
+		buttons.find((b) => collect(b).texts.join('').indexOf(label) !== -1)
+	const findExact = (label) => buttons.find((b) => collect(b).texts.join('') === label)
+
+	const commit = findExact('提交')
+	assert.ok(commit, '找不到「提交」按钮')
+	assert.equal(commit.props.style.color, '#fff')
+	assert.equal(commit.props.style.background, LIGHT_ACCENT)
+
+	const normal = find('生成信息')
+	assert.ok(normal, '找不到「生成信息」按钮')
+	assert.ok(
+		normal.props.style.border.indexOf(LIGHT_BORDER) !== -1,
+		'普通按钮边框应为主题边框色，实际：' + normal.props.style.border
+	)
+})
+
+check('日期分组的标题与提交文字用同一个 gutter（导轨对齐）', () => {
+	// 曾经标题额外加了 8px 内边距去避开越界的连接线，导致标题比提交文字右移 8px
+	const LOG =
+		"{commits:[{sha:'a1',short:'a1',subject:'x',author:'me',date:'2026-09-12T12:00:00Z',refs:[]}],hasMore:false}"
+	const tree = renderPanel((s) =>
+		s
+			.replace("React.useState('changes')", "React.useState('log')")
+			.replace('var [logState, setLogState] = React.useState(null)', 'var [logState, setLogState] = React.useState(' + LOG + ')')
+	)
+	const { nodes } = collect(tree)
+	// 两处 gutter 的宽度必须一致，且连接线不得越出 gutter（即 width + marginLeft ≤ gutter/2）
+	const gutters = nodes.filter((n) => n.props && n.props.style && String(n.props.style.flex || '').indexOf('0 0 ') === 0 && n.props.style.position === 'relative')
+	assert.ok(gutters.length >= 2, '应至少有两个 gutter（标题行 + 提交列），实际 ' + gutters.length)
+	const widths = new Set(gutters.map((g) => g.props.style.flex))
+	assert.equal(widths.size, 1, 'gutter 宽度不一致：' + [...widths].join(' / '))
+	const gutterPx = Number([...widths][0].split(' ')[2].replace('px', ''))
+	for (const g of gutters) {
+		for (const child of g.children) {
+			const st = child && child.props && child.props.style
+			if (!st || st.marginLeft === undefined || st.width === undefined) continue
+			if (typeof st.width !== 'number') continue
+			assert.ok(
+				st.marginLeft + st.width <= gutterPx / 2 + 0.001,
+				'gutter 内的线段越界：marginLeft=' + st.marginLeft + ' width=' + st.width
+			)
+		}
+	}
+})
+
 console.log(`\n${passed} 项通过`)

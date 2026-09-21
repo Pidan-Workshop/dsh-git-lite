@@ -124,7 +124,7 @@ dsh plugin --profile web add link:/path/to/dsh-git-lite   # 链接安装，改�
 node --check lib/index.js
 node --check lib/client.js
 node tests/host-smoke.mjs     # 34 项：porcelain v2 解析、配置、鉴权拒绝面、包含关系回退、log/show 解析、路由装配
-node tests/client-smoke.mjs   # 48 项：注册点与 disposer 持有 + 浮层避让 + 胶囊状态机 + 分隔条 clamp + 日期分组与时间格式化
+node tests/client-smoke.mjs   # 51 项：注册点与 disposer 持有 + 浮层避让 + 胶囊状态机 + clamp + 日期分组 + 渲染层检查
 npm test                      # 两个都跑
 ```
 
@@ -302,6 +302,8 @@ diff 的最小可读高度，且绝不返回负数。
 | 分支胶囊在部分会话里不出现 | **不是 bug**：那些会话的 cwd 真的不是 git 仓库。实测 215 个会话里 55 个如此（42 个在 `/Users/yomob/Demo`——该目录 `fatal: not a git repository`）。宿主如实返回 `not-a-repo` | 原先静默隐藏，无法区分「没有仓库」与「插件坏了」，改为显示弱化的**「无仓库」**胶囊，原因放 tooltip |
 | 会话 cwd 是工作区**子目录**时拿不到仓库 | `workspaceRegistry.resolveByPath()` 是**精确相等**匹配（`entity.path === canonical`），子目录返回 `undefined` | 加包含关系回退：取包含该 cwd 的、最长（最具体）的工作区根。边界不变——仓库根仍须落在同一工作区内 |
 | Git 标签页显示「这类内容还没有可用的查看方式。」（`tab.unavailable`） | **客户端 HMR 热重载会重跑 `apply()`**。我丢弃了 `sidebarRightTabs.register` 返回的 disposer —— 而它的契约原文是 *"The caller holds the returned disposer inside its own `ctx.effect`, so a type's registration lives exactly as long as the plugin that contributed it."* 注册因此活过本代插件，重载后撞上 `tab type id "git-lite" is already registered`；旧代码的**单个 try/catch** 吞掉这一抛并**跳过了后面的主体与标题注册**，两个 seat 同时缺失 | 每个注册各自 `ctx.effect(..., label)` 持有 disposer，且四次注册互不连累。两条回归测试：disposer 是否被持有、单点失败是否仍注册其余 |
+| 「提交」按钮白字看不见、其它按钮描边发黑 | **`Btn` 把 `props.t`（i18n 字典）当成 theme 用**，于是 `t.fg` / `t.accent` / `t.border` 全是 `undefined`：主按钮 `background: undefined` → 白字无底色；普通按钮 `1px solid undefined` 是**非法 CSS**，整条声明被丢弃后回退成浏览器默认边框 | `Btn` 改为同时接收 `theme`（颜色）与 `t`（文案）。并补了**渲染层**测试：渲染整棵树后断言「任何样式值都不得是 undefined」——逻辑测试全绿也发现不了这类纯 UI 症状 |
+| 日期分组标题比提交文字右移 8px | 导轨的连接线**越出 gutter** 压到标题，我当时用「给标题加 `paddingLeft: 8`」来避开，而提交列没有这 8px | 把 gutter 从 18 加宽到 22，连接线收在 gutter 内（`marginLeft + width ≤ gutter/2`），标题与提交列因此共享同一文字起点。补了测试断言两处 gutter 宽度一致、线段不越界 |
 | 分支胶囊要**等几秒**才出现 | 切会话时第一次 `/status` 常常赶在宿主把会话载入之前（此时如实返回 `session-unknown`，实测响应 <1ms），而下一次轮询要等一个完整的 6 秒周期 | 未拿到权威答复期间改为 **500ms 快重试**（连续 12 次后回常规节奏，不做无限快轮询）。同时 `session-unknown` 归类为「未就绪」而非「无仓库」：不显示弱化胶囊、面板也不弹红条 |
 
 ### 快速判断某个会话为什么没有胶囊
