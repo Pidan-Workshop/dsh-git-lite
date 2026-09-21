@@ -124,7 +124,7 @@ dsh plugin --profile web add link:/path/to/dsh-git-lite   # 链接安装，改�
 node --check lib/index.js
 node --check lib/client.js
 node tests/host-smoke.mjs     # 34 项：porcelain v2 解析、配置、鉴权拒绝面、包含关系回退、log/show 解析、路由装配
-node tests/client-smoke.mjs   # 41 项：注册点 + 浮层避让 + 胶囊状态机 + 分隔条 clamp + 时间格式化
+node tests/client-smoke.mjs   # 43 项：注册点与 disposer 持有 + 浮层避让 + 胶囊状态机 + 分隔条 clamp + 时间格式化
 npm test                      # 两个都跑
 ```
 
@@ -264,6 +264,7 @@ diff 的最小可读高度，且绝不返回负数。
 | 面板显示 `this session has no working directory` | **`Session` 类没有顶层 `cwd`**。创建元数据挂在 `session.header.cwd` 上，所以 `session.cwd` 恒为 `undefined` | 读 `session.header.cwd`，并加 `clientCwd` 兜底（同样过工作区闸门） |
 | 分支胶囊在部分会话里不出现 | **不是 bug**：那些会话的 cwd 真的不是 git 仓库。实测 215 个会话里 55 个如此（42 个在 `/Users/yomob/Demo`——该目录 `fatal: not a git repository`）。宿主如实返回 `not-a-repo` | 原先静默隐藏，无法区分「没有仓库」与「插件坏了」，改为显示弱化的**「无仓库」**胶囊，原因放 tooltip |
 | 会话 cwd 是工作区**子目录**时拿不到仓库 | `workspaceRegistry.resolveByPath()` 是**精确相等**匹配（`entity.path === canonical`），子目录返回 `undefined` | 加包含关系回退：取包含该 cwd 的、最长（最具体）的工作区根。边界不变——仓库根仍须落在同一工作区内 |
+| Git 标签页显示「这类内容还没有可用的查看方式。」（`tab.unavailable`） | **客户端 HMR 热重载会重跑 `apply()`**。我丢弃了 `sidebarRightTabs.register` 返回的 disposer —— 而它的契约原文是 *"The caller holds the returned disposer inside its own `ctx.effect`, so a type's registration lives exactly as long as the plugin that contributed it."* 注册因此活过本代插件，重载后撞上 `tab type id "git-lite" is already registered`；旧代码的**单个 try/catch** 吞掉这一抛并**跳过了后面的主体与标题注册**，两个 seat 同时缺失 | 每个注册各自 `ctx.effect(..., label)` 持有 disposer，且四次注册互不连累。两条回归测试：disposer 是否被持有、单点失败是否仍注册其余 |
 | 分支胶囊要**等几秒**才出现 | 切会话时第一次 `/status` 常常赶在宿主把会话载入之前（此时如实返回 `session-unknown`，实测响应 <1ms），而下一次轮询要等一个完整的 6 秒周期 | 未拿到权威答复期间改为 **500ms 快重试**（连续 12 次后回常规节奏，不做无限快轮询）。同时 `session-unknown` 归类为「未就绪」而非「无仓库」：不显示弱化胶囊、面板也不弹红条 |
 
 ### 快速判断某个会话为什么没有胶囊
@@ -300,12 +301,21 @@ if(why!=="OK 有仓库")console.log(why.padEnd(16),c)}}catch{}}}' | sort | uniq 
 3. 浏览器 console 里搜 `dsh-git-lite` —— 注册失败会打 `xx registration failed`。
 4. 改了 `lib/index.js` **必须重启 `dsh web`**；只改 `lib/client.js` 刷新页面即可。**两者都改就要重启 + 刷新。**
 
-### 为什么改了 `lib/client.js` 之后光刷新有时不够
+### 改了之后到底要不要重启
 
 `dsh-client-modules` 在**激活时**（宿主启动）用 `readFileSync` 把客户端 bundle 预读进内存，对外以
 `/plugins/??<id>/client.js&rev=<内容哈希>` 提供，并配 `cache-control: max-age=31536000, immutable`。
-那个 `rev` 是内容哈希，所以**缓存本身是安全的**（内容变了 URL 就变）；但 `rev` 是在启动时算的，
-所以不重启的话服务器只会发旧字节。**改完客户端半区也要重启，刷新才有意义。**
+`rev` 是内容哈希，所以**浏览器缓存本身是安全的**（内容变了 URL 就变）。
+
+但服务器端是另一回事，两侧的行为不同：
+
+| 改了 | 生效方式 |
+|---|---|
+| `lib/index.js`（宿主半区） | **必须重启 `dsh web`** —— 宿主半区在进程启动时加载 |
+| `lib/client.js`（浏览器半区） | 本机实测**有 HMR watch 生效**：`install.sh` 写入文件即触发 `rebuilt()`，插件在页面里原地重载（依据：一次页面会话里出现过两个不同的 `rev`）。最稳妥仍是**完整刷新页面** |
+
+**完整刷新页面**还有个额外好处：它会清掉任何一代遗留的注册（比如上面那条「已注册」的
+历史遗留），从干净状态重新来一遍。
 
 ## License
 

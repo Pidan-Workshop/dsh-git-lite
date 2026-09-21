@@ -104,11 +104,18 @@ const scope = {
 	}
 }
 
+// 记录 ctx.effect 的调用：注册表契约要求调用方把返回的 disposer 挂在 effect 上，
+// 丢弃它会让注册活过本代插件，热重载后 apply 再跑就撞「已注册」。
+const effects = []
 const ctx = {
 	locale: { getLocale: () => ({ active: 'zh' }), subscribe: () => () => {} },
 	inject: (deps, cb) => {
 		injectedDeps.push(deps)
 		return cb(scope)
+	},
+	effect: (fn, label) => {
+		effects.push({ label, dispose: fn() })
+		return () => {}
 	}
 }
 
@@ -165,6 +172,65 @@ check('注册了分支胶囊到会话头部右对齐区（而非输入框上方�
 check('不再往 conversation.input.dock 注册（避免额外占一行）', () => {
 	const hit = slotRegistrations.filter((r) => r.opts.name === 'conversation.input.dock')
 	assert.equal(hit.length, 0)
+})
+
+check('每个注册的 disposer 都被 ctx.effect 持有（HMR 安全的关键）', () => {
+	// 回归：曾经丢弃 disposer → 注册活过本代插件 → 热重载后 apply 再跑，
+	// tab type 注册抛「already registered」，并连带跳过主体/标题注册，
+	// 表现为 Git 标签页显示 tab.unavailable。
+	assert.equal(effects.length, 4, '四个注册各应挂一个 effect')
+	for (const e of effects) {
+		assert.equal(typeof e.dispose, 'function', e.label + ' 的 disposer 未被持有')
+	}
+	assert.deepEqual(
+		effects.map((e) => e.label),
+		[
+			'dsh-git-lite: tab type',
+			'dsh-git-lite: pane body',
+			'dsh-git-lite: pane title',
+			'dsh-git-lite: header chip'
+		]
+	)
+})
+
+check('注册失败被兜住且不抛给调用方（一个失败不连累其余）', () => {
+	// 让 tab type 注册抛错，其余三个仍应注册成功。
+	const regs = []
+	const sc = {
+		sessions: { list: { subscribe: () => () => {}, getSnapshot: () => ({ current: undefined }) } },
+		locale: { getLocale: () => ({ active: 'zh' }), subscribe: () => () => {} },
+		sidebarRight: { openTab: () => {} },
+		sidebarRightTabs: {
+			register: () => {
+				throw new Error('already registered')
+			}
+		},
+		slots: {
+			inject: (seat, fn) => fn(),
+			register: (o) => {
+				regs.push(o.name)
+				return () => {}
+			}
+		}
+	}
+	const localEffects = []
+	assert.doesNotThrow(() => {
+		mod.apply({
+			locale: { getLocale: () => ({ active: 'zh' }), subscribe: () => () => {} },
+			inject: (_d, cb) => cb(sc),
+			effect: (fn, label) => {
+				localEffects.push({ label, dispose: fn() })
+				return () => {}
+			}
+		})
+	})
+	assert.equal(localEffects.length, 4)
+	// tab type 的 disposer 应为 undefined（抛错被兜住），其余三个仍是函数
+	assert.equal(localEffects[0].dispose, undefined)
+	for (const e of localEffects.slice(1)) {
+		assert.equal(typeof e.dispose, 'function', e.label + ' 应仍然注册成功')
+	}
+	assert.deepEqual(regs, ['sidebar.right.pane.tab', 'sidebar.right.pane.tab.title', 'conversation.session.header.utilities'])
 })
 
 check('三处 ctx.inject 的依赖名都真实存在，且各自只声明所需服务', () => {
