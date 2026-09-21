@@ -14,6 +14,9 @@ function check(label, fn) {
 	console.log(`  ✓ ${label}`)
 }
 
+// 注意：vm 沙箱里产生的对象/数组，其原型与本 realm 不同，
+// assert.deepStrictEqual 会比较原型而失败。凡是比较沙箱返回值，
+// 一律先归一化（Array.from / 逐字段断言）。
 console.log('dsh-git-lite client smoke')
 
 // ── 在受控沙箱里执行 lib/client.js ─────────────────────────────
@@ -467,6 +470,55 @@ check('月/日/时/分都补零', () => {
 	const s = formatCommitTime('2026-01-02T03:04:05Z')
 	assert.equal(s.length, 11)
 	assert.ok(s.includes('-'), '应有日期分隔符')
+})
+
+
+// ── 按日期分组提交 ─────────────────────────────────────────────
+const { localDayKey, formatDayLabel, groupCommitsByDay } = mod.__internals
+
+check('localDayKey 用本地日；非法输入返回空串', () => {
+	// 取 UTC 正午：在任何现实时区下本地日期都是同一天，断言因此与时区无关
+	assert.equal(localDayKey('2026-09-12T12:00:00Z'), '2026-09-12')
+	assert.equal(localDayKey(''), '')
+	assert.equal(localDayKey('nope'), '')
+})
+
+check('groupCommitsByDay 只合并相邻同日', () => {
+	const g = groupCommitsByDay([
+		{ date: '2026-09-12T12:00:00Z', subject: 'a' },
+		{ date: '2026-09-12T06:00:00Z', subject: 'b' },
+		{ date: '2026-09-11T12:00:00Z', subject: 'c' }
+	])
+	assert.equal(g.length, 2)
+	assert.equal(g[0].day, '2026-09-12')
+	assert.deepEqual(Array.from(g[0].commits, (c) => c.subject), ['a', 'b'])
+	assert.equal(g[1].day, '2026-09-11')
+	assert.equal(g[1].commits.length, 1)
+})
+
+check('同一天不连续时产生两个分组（不全局归并）', () => {
+	// 全局归并会打乱时间顺序，也会让分页追加时同一天出现两组
+	const g = groupCommitsByDay([
+		{ date: '2026-09-12T12:00:00Z' },
+		{ date: '2026-09-11T12:00:00Z' },
+		{ date: '2026-09-12T06:00:00Z' }
+	])
+	assert.equal(g.length, 3)
+})
+
+check('空列表与全非法日期', () => {
+	assert.equal(Array.from(groupCommitsByDay([])).length, 0)
+	const g = groupCommitsByDay([{ date: '' }, { date: 'bad' }])
+	assert.equal(g.length, 1, '两个非法日期应归入同一组')
+	assert.equal(g[0].day, '')
+})
+
+check('formatDayLabel 本地化且非法输入不抛', () => {
+	assert.match(formatDayLabel('2026-09-12T12:00:00Z', 'zh'), /2026/)
+	assert.match(formatDayLabel('2026-09-12T12:00:00Z', 'en'), /2026/)
+	assert.equal(formatDayLabel('bad', 'zh'), '')
+	// 未知语言不该抛，应回退到日期键
+	assert.equal(formatDayLabel('2026-09-12T12:00:00Z', 'not a locale'), '2026-09-12')
 })
 
 

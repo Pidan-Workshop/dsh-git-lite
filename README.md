@@ -124,7 +124,7 @@ dsh plugin --profile web add link:/path/to/dsh-git-lite   # 链接安装，改�
 node --check lib/index.js
 node --check lib/client.js
 node tests/host-smoke.mjs     # 34 项：porcelain v2 解析、配置、鉴权拒绝面、包含关系回退、log/show 解析、路由装配
-node tests/client-smoke.mjs   # 43 项：注册点与 disposer 持有 + 浮层避让 + 胶囊状态机 + 分隔条 clamp + 时间格式化
+node tests/client-smoke.mjs   # 48 项：注册点与 disposer 持有 + 浮层避让 + 胶囊状态机 + 分隔条 clamp + 日期分组与时间格式化
 npm test                      # 两个都跑
 ```
 
@@ -177,7 +177,7 @@ npm test                      # 两个都跑
 | 分支下拉 + ahead/behind | `0 0 auto` | 固定 |
 | 操作条（拉取/抓取/推送/刷新/stash） | `0 0 auto` | 固定 |
 | 提示行（错误/成功） | `0 0 auto` | 固定，仅在有内容时出现 |
-| **变更列表 ↔ diff** | `1 1 auto` | **中间用可拖拽分隔条分配** |
+| **列表 ↔ 下方区域** | `1 1 auto` | **中间用可拖拽分隔条分配；下方无内容时整块隐藏**（连分隔条一起） |
 | 提交区 | `0 0 auto` | 固定，含避开第三方浮层的动态内缩 |
 
 ### 列表 / diff 的高度分配
@@ -193,6 +193,18 @@ npm test                      # 两个都跑
 - 拖拽结束才写一次 localStorage（不在 `pointermove` 里每帧写）
 - 窗口变矮时用 `resize` 重新 clamp，防止列表溢出把 diff 挤没
 - 既保留无障碍语义（`role="separator"` / `aria-orientation`），也留了 `title` 提示
+
+### 下方区域无内容时整块让位
+
+变更模式没选文件、历史模式没选提交时，下方区域**连分隔条一起隐藏**，把整个高度让给列表——
+而不是让一个空 diff 区白占半屏。判断就是一个布尔量：
+
+```js
+var hasBottom = mode === 'changes' ? selected !== null : commitView !== null
+```
+
+列表的伸缩也随之切换：有下方区域时用 `listHeight`（拖拽后的固定高度），没有时回到 `1 1 0`
+吃满。用户拖过的高度存着不丢，等下方区域再出现时照旧生效。
 
 夹取逻辑抽成纯函数 `clampListHeight(next, bodyHeight, listMin, diffMin)` 并单测 6 项——
 **clamp 边界写错会让某一侧塌成 0 高度，看起来像"内容不见了"**，这是真机上最难自查的一类布局
@@ -242,6 +254,20 @@ diff 的最小可读高度，且绝不返回负数。
 
 这样**布局仍然是「两个区域 + 一条分隔条」**，`变更` 与 `历史` 两个模式共用同一套布局代码，
 拖拽分隔条照常工作；提交区只在变更模式显示。
+
+### 按日期分组
+
+提交列表按**本地日历日**分组，标题形如 `2026年9月12日 的提交` / `Commits on Sep 12, 2026`
+（GitHub 仓库历史页的做法），标题行 `position: sticky` 吸顶。
+
+三个纯函数，各有单测：
+
+- `localDayKey(iso)` —— 用**本地**日而不是 UTC 切片：用户看到的时间是本地时间，按 UTC 切会把
+  晚上提交的分到前一天
+- `formatDayLabel(iso, localeId)` —— 交给 `Intl.DateTimeFormat`，而不是自己维护十二个月的翻译；
+  未知语言回退到日期键
+- `groupCommitsByDay(commits)` —— **只合并相邻同日**，不做全局归并。列表本就是时间倒序，全局归并
+  会打乱顺序，也会让分页追加时同一天出现两个分组
 
 设计取舍：
 
