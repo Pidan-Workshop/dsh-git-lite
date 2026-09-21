@@ -22,6 +22,22 @@ console.log('dsh-git-lite client smoke')
 // ── 在受控沙箱里执行 lib/client.js ─────────────────────────────
 const src = readFileSync(new URL('../lib/client.js', import.meta.url), 'utf8')
 
+// 定时器：client.js 只用 setTimeout 做「注册冲突重试」与延迟关提示。
+// 这里不真跑回调，而是记下来由用例显式 flush —— 重试路径因此可确定性测试。
+const timers = []
+let timerSeq = 0
+function flushTimers() {
+	let ran = 0
+	for (;;) {
+		const next = timers.find((t) => t.alive)
+		if (next === undefined) return ran
+		next.alive = false
+		next.fn()
+		ran += 1
+		if (ran > 100) throw new Error('定时器没有收敛（疑似死循环）')
+	}
+}
+
 let definition = null
 const sandbox = {
 	window: {
@@ -35,6 +51,14 @@ const sandbox = {
 	console: { log: () => {}, warn: () => {}, error: () => {} },
 	setInterval: () => 0,
 	clearInterval: () => {},
+	setTimeout: (fn, ms) => {
+		timerSeq += 1
+		timers.push({ id: timerSeq, fn, ms, alive: true })
+		return timerSeq
+	},
+	clearTimeout: (id) => {
+		for (const t of timers) if (t.id === id) t.alive = false
+	},
 	fetch: () => Promise.resolve({ json: () => Promise.resolve({ ok: true, value: {} }) })
 }
 sandbox.globalThis = sandbox
@@ -197,7 +221,8 @@ check('每个注册的 disposer 都被 ctx.effect 持有（HMR 安全的关键�
 })
 
 check('注册失败被兜住且不抛给调用方（一个失败不连累其余）', () => {
-	// 让 tab type 注册抛错，其余三个仍应注册成功。
+	// 抛一个**非冲突**错误：重试治不了这类问题，应立即兜住并继续后面的注册。
+	// 冲突错误的处理见下方「注册冲突会重试」用例。
 	const regs = []
 	const sc = {
 		sessions: { list: { subscribe: () => () => {}, getSnapshot: () => ({ current: undefined }) } },
@@ -205,7 +230,7 @@ check('注册失败被兜住且不抛给调用方（一个失败不连累其余�
 		sidebarRight: { openTab: () => {} },
 		sidebarRightTabs: {
 			register: () => {
-				throw new Error('already registered')
+				throw new Error('slot wiring mistake')
 			}
 		},
 		slots: {
@@ -228,12 +253,75 @@ check('注册失败被兜住且不抛给调用方（一个失败不连累其余�
 		})
 	})
 	assert.equal(localEffects.length, 4)
-	// tab type 的 disposer 应为 undefined（抛错被兜住），其余三个仍是函数
-	assert.equal(localEffects[0].dispose, undefined)
-	for (const e of localEffects.slice(1)) {
-		assert.equal(typeof e.dispose, 'function', e.label + ' 应仍然注册成功')
+	// 每个 effect 都返回自己的清理函数：注册可能因重试而**延迟到达**，
+	// 清理函数负责在卸载时释放它（不再是「抛错就没有 disposer」）。
+	for (const e of localEffects) {
+		assert.equal(typeof e.dispose, 'function', e.label + ' 应返回清理函数')
 	}
 	assert.deepEqual(regs, ['sidebar.right.pane.tab', 'sidebar.right.pane.tab.title', 'conversation.session.header.utilities'])
+})
+
+check('「already registered」被判为可重试的注册冲突', () => {
+	const { isRegistrationConflict } = mod.__internals
+	assert.equal(
+		isRegistrationConflict(new Error('sidebarRight: tab type id "git-lite" is already registered')),
+		true
+	)
+	assert.equal(
+		isRegistrationConflict(new Error('sidebarRight: tab kind "git-lite" is already registered (extension)')),
+		true
+	)
+})
+
+check('其它注册错误不重试（避免空等一秒），非法输入也不炸', () => {
+	const { isRegistrationConflict } = mod.__internals
+	assert.equal(isRegistrationConflict(new Error('slot "nope" is not declared')), false)
+	assert.equal(isRegistrationConflict(new Error('boom')), false)
+	assert.equal(isRegistrationConflict(undefined), false)
+	assert.equal(isRegistrationConflict(null), false)
+	assert.equal(isRegistrationConflict(''), false)
+})
+
+check('HMR 下注册冲突会重试：旧代释放后补上注册，而不是永久丢掉注册点', () => {
+	// 回归：新代 apply() 早于旧代 dispose 时 register 抛 already registered；
+	// 旧代码只打一条 warn 就放弃 → 该注册点永久缺失（表现为 tab.unavailable）。
+	timers.length = 0
+	let attempts = 0
+	const registered = []
+	const localEffects = []
+	const sc = {
+		sessions: { list: { subscribe: () => () => {}, getSnapshot: () => ({ current: undefined }) } },
+		locale: { getLocale: () => ({ active: 'zh' }), subscribe: () => () => {} },
+		sidebarRight: { openTab: () => {} },
+		sidebarRightTabs: {
+			register: (def) => {
+				attempts += 1
+				if (attempts === 1) {
+					throw new Error('sidebarRight: tab type id "git-lite" is already registered')
+				}
+				registered.push(def.id)
+				return () => {}
+			}
+		},
+		slots: { inject: (seat, fn) => fn(), register: () => () => {} }
+	}
+	mod.apply({
+		locale: { getLocale: () => ({ active: 'zh' }), subscribe: () => () => {} },
+		inject: (_d, cb) => cb(sc),
+		effect: (fn, label) => {
+			localEffects.push({ label, dispose: fn() })
+			return () => {}
+		}
+	})
+	assert.equal(attempts, 1, '首次注册应失败')
+	assert.deepEqual(registered, [], '此时还没有注册上')
+	assert.ok(
+		timers.some((t) => t.alive),
+		'应排入一次重试，而不是就此放弃'
+	)
+	flushTimers()
+	assert.equal(attempts, 2, '重试应再尝试一次')
+	assert.deepEqual(registered, ['git-lite'], '旧代释放后应补上注册')
 })
 
 check('三处 ctx.inject 的依赖名都真实存在，且各自只声明所需服务', () => {

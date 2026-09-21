@@ -43,6 +43,31 @@
 - 状态用 `git status --porcelain=v2 --branch -z`，重命名的原路径是独立 token，路径不被引号包裹。
 - `execFile('git', args, ...)`，argv 一律用数组传，**绝不由客户端拼接**，因此不存在 shell 注入面。
 
+## 生成提交信息：llm 调用契约
+
+「✨ 生成信息」走可选注入的 `llm` + `agentDefaultModel`。调用形状有两条硬约束，都属于
+**写错了不会报错、只会静默变空**的类型：
+
+**1. 消息必须是块数组，且带 `id` 与 `source`。**
+
+```js
+buildUserMessage(text)
+// → { id: <uuid>, role: 'user',
+//     content: [{ type: 'text', text }],
+//     source: { kind: 'plugin', plugin: 'dsh-git-lite' } }
+```
+
+传裸字符串不行：适配器的 `serializeMessages` 会对 `content` 调 `.filter()`，直接抛错。
+
+**2. 必须读终止分片。**
+
+每个流都以 `{ type: 'finish', reason }` 结束，`reason.kind` 为 `stop` / `error` / `aborted`；
+失败时真正的诊断在 `reason.failure`（稳定 code + message）。只挑 `text-delta` 会把失败**整条吞掉**，
+只剩空字符串，最后表现成一句与原因完全无关的「模型没有返回提交信息」。
+
+所以 `streamToText()` 的契约是「返回文本**或抛错**」，绝不静默返回空串。空串只可能来自
+「流本身没有任何内容」，此时才由上层报 `llm-empty`。
+
 ## 分支胶囊的状态机
 
 胶囊的判定抽成了纯函数 `chipState(brief, briefErr, sessionId)`，四个状态：
@@ -263,7 +288,8 @@ keyframes、`:hover`、`:focus-visible`、细滚动条。
 | 面板显示 `this session has no working directory` | **`Session` 类没有顶层 `cwd`**。创建元数据挂在 `session.header.cwd` 上，所以 `session.cwd` 恒为 `undefined` | 读 `session.header.cwd`，并加 `clientCwd` 兜底（同样过工作区闸门） |
 | 分支胶囊在部分会话里不出现 | **不是 bug**：那些会话的 cwd 真的不是 git 仓库。实测 215 个会话里 55 个如此（42 个在 `/Users/yomob/Demo`——该目录 `fatal: not a git repository`）。宿主如实返回 `not-a-repo` | 原先静默隐藏，无法区分「没有仓库」与「插件坏了」，改为显示弱化的**「无仓库」**胶囊，原因放 tooltip |
 | 会话 cwd 是工作区**子目录**时拿不到仓库 | `workspaceRegistry.resolveByPath()` 是**精确相等**匹配（`entity.path === canonical`），子目录返回 `undefined` | 加包含关系回退：取包含该 cwd 的、最长（最具体）的工作区根。边界不变——仓库根仍须落在同一工作区内 |
-| Git 标签页显示「这类内容还没有可用的查看方式。」（`tab.unavailable`） | **客户端 HMR 热重载会重跑 `apply()`**。我丢弃了 `sidebarRightTabs.register` 返回的 disposer —— 而它的契约原文是 *"The caller holds the returned disposer inside its own `ctx.effect`, so a type's registration lives exactly as long as the plugin that contributed it."* 注册因此活过本代插件，重载后撞上 `tab type id "git-lite" is already registered`；旧代码的**单个 try/catch** 吞掉这一抛并**跳过了后面的主体与标题注册**，两个 seat 同时缺失 | 每个注册各自 `ctx.effect(..., label)` 持有 disposer，且四次注册互不连累。两条回归测试：disposer 是否被持有、单点失败是否仍注册其余 |
+| Git 标签页显示「这类内容还没有可用的查看方式。」（`tab.unavailable`） | **客户端 HMR 热重载会重跑 `apply()`**。我丢弃了 `sidebarRightTabs.register` 返回的 disposer —— 而它的契约原文是 *"The caller holds the returned disposer inside its own `ctx.effect`, so a type's registration lives exactly as long as the plugin that contributed it."* 注册因此活过本代插件，重载后撞上 `tab type id "git-lite" is already registered`；旧代码的**单个 try/catch** 吞掉这一抛并**跳过了后面的主体与标题注册**，两个 seat 同时缺失 | 每个注册各自 `ctx.effect(..., label)` 持有 disposer，四次注册互不连累；并且**冲突还要重试**——HMR 下新代 `apply()` 可能早于旧代 dispose，此时 id 仍被占着，光持有 disposer 救不了当次注册。`hang()` 对 `already registered` 这类**暂时**冲突按 60ms × 20 次重试（旧代释放后即补上），其余错误立刻打日志不空等。三条回归测试：disposer 是否被持有、单点失败是否仍注册其余、冲突是否重试并最终注册上 |
+| 点「✨ 生成信息」只报**「模型没有返回提交信息」**，看不出真实原因 | 两个缺陷叠加：① `messages` 传成 `[{ role: 'user', content: '<裸字符串>' }]`，而 dsh-llm 契约要求 content 是**块数组**且消息带 `id` / `source` —— 适配器 `serializeMessages` 对 content 调 `.filter()` 直接抛错；② 该失败被 runtime 包成终止分片 `{ type: 'finish', reason: { kind: 'error', failure } }`，而 `streamToText` 只挑 `text-delta`，**把终止分片整条吞掉**，于是只剩空字符串，最后报出这句与真正原因无关的话 | `buildUserMessage()` 按契约组装（块数组 + `randomUUID()` 的 id + `plugin` source）；`streamToText()` 显式读 `finish`，`reason.kind` 为 `error` / `aborted` 时抛出提供方的 `failure.code` 与 `failure.message`（缺字段时有兜底文案）。6 条回归测试钉住消息形状与终止分片处理 |
 | 「提交」按钮白字看不见、其它按钮描边发黑 | **`Btn` 把 `props.t`（i18n 字典）当成 theme 用**，于是 `t.fg` / `t.accent` / `t.border` 全是 `undefined`：主按钮 `background: undefined` → 白字无底色；普通按钮 `1px solid undefined` 是**非法 CSS**，整条声明被丢弃后回退成浏览器默认边框 | `Btn` 改为同时接收 `theme`（颜色）与 `t`（文案）。并补了**渲染层**测试：渲染整棵树后断言「任何样式值都不得是 undefined」——逻辑测试全绿也发现不了这类纯 UI 症状 |
 | 日期分组标题比提交文字右移 8px | 导轨的连接线**越出 gutter** 压到标题，我当时用「给标题加 `paddingLeft: 8`」来避开，而提交列没有这 8px | 把 gutter 从 18 加宽到 22，连接线收在 gutter 内（`marginLeft + width ≤ gutter/2`），标题与提交列因此共享同一文字起点。补了测试断言两处 gutter 宽度一致、线段不越界 |
 | 主按钮/选中分段变成**空白方块**（白底白字） | 用 `--dsw-alias-brand-primary` 当**填充**色。它其实是品牌**前景**色（浅色近黑、深色近白），名字有误导性 | 改用 `--dsw-alias-button-info-fill`（蓝色填充）配 `--dsw-alias-label-primary-foreground`（配对文字色）；测试同时断言「必须用前者」与「不得用后者」 |
@@ -326,8 +352,8 @@ if(why!=="OK 有仓库")console.log(why.padEnd(16),c)}}catch{}}}' | sort | uniq 
 ```sh
 node --check lib/index.js
 node --check lib/client.js
-node tests/host-smoke.mjs     # 34 项：porcelain v2 解析、配置、鉴权拒绝面、包含关系回退、log/show 解析、路由装配
-node tests/client-smoke.mjs   # 46 项：注册点与 disposer + 胶囊状态机 + clamp + 日期分组 + 渲染层检查
+node tests/host-smoke.mjs     # 40 项：porcelain v2 解析、配置、鉴权拒绝面、包含关系回退、log/show 解析、路由装配、LLM 消息契约与终止分片
+node tests/client-smoke.mjs   # 49 项：注册点与 disposer + 注册冲突重试 + 胶囊状态机 + clamp + 日期分组 + 渲染层检查
 npm test                      # 两个都跑
 ```
 

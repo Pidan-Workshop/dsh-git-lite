@@ -8,18 +8,27 @@ import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import {
 	apply,
+	buildUserMessage,
 	inject,
 	mergeCommitFiles,
 	name,
 	normalizeConfig,
 	parseLog,
 	parseStatus,
-	resolveRepo
+	resolveRepo,
+	streamToText
 } from '../lib/index.js'
 
 let passed = 0
 function check(label, fn) {
 	fn()
+	passed += 1
+	console.log(`  ✓ ${label}`)
+}
+
+/** 异步用例：check 是同步的，异步断言必须等完再计数。 */
+async function acheck(label, fn) {
+	await fn()
 	passed += 1
 	console.log(`  ✓ ${label}`)
 }
@@ -381,6 +390,81 @@ check('路由处理器对未知路径返回 404 且拒绝非 POST', async () => 
 	await handler({ method: 'POST', url: '/git-lite/nope', on: () => {} }, fakeRes())
 	assert.equal(statuses[1], 404)
 	assert.match(bodies[1], /unknown route/)
+})
+
+// ── LLM 调用契约 ───────────────────────────────────────────────
+// 真实故障：本插件曾把 messages 写成 [{ role: 'user', content: '<裸字符串>' }]，
+// 适配器 serializeMessages 会对 content 调 .filter() → 直接抛错；runtime 把该失败
+// 包成终止 finish 分片，而消费方当时只挑 text-delta，于是失败被吞成空字符串，
+// UI 上只剩一句误导人的「模型没有返回提交信息」。两条都要钉住。
+
+check('buildUserMessage 的 content 是块数组（不是裸字符串）', () => {
+	assert.deepEqual(buildUserMessage('hello').content, [{ type: 'text', text: 'hello' }])
+})
+
+check('buildUserMessage 带唯一 id 与 plugin source', () => {
+	const a = buildUserMessage('x')
+	const b = buildUserMessage('x')
+	assert.equal(a.role, 'user')
+	assert.ok(typeof a.id === 'string' && a.id.length > 0, 'id 不能为空')
+	assert.notEqual(a.id, b.id, '每条消息的 id 必须唯一')
+	assert.equal(a.source.kind, 'plugin')
+	assert.equal(a.source.plugin, 'dsh-git-lite')
+})
+
+/** 造一个假的 llm.stream 分片序列。 */
+async function* fakeStream(...chunks) {
+	for (const chunk of chunks) yield chunk
+}
+
+await acheck('streamToText 累加 text-delta 并忽略无关分片', async () => {
+	const text = await streamToText(
+		fakeStream(
+			{ type: 'block-start', index: 0 },
+			{ type: 'text-delta', text: 'feat: ' },
+			{ type: 'text-delta', text: 'add a thing' },
+			{ type: 'usage', usage: { inputTokens: 1 } },
+			{ type: 'finish', reason: { kind: 'stop' } }
+		)
+	)
+	assert.equal(text, 'feat: add a thing')
+})
+
+await acheck('streamToText 空流返回空串（交由上层判定）', async () => {
+	assert.equal(await streamToText(fakeStream()), '')
+})
+
+await acheck('streamToText 把 finish 的 error 抛出（保留提供方的 code / message）', async () => {
+	await assert.rejects(
+		streamToText(
+			fakeStream({
+				type: 'finish',
+				reason: {
+					kind: 'error',
+					failure: {
+						code: 'EMPTY_RESPONSE',
+						message: 'model returned a completed response with no content'
+					}
+				}
+			})
+		),
+		(err) => {
+			assert.equal(err.code, 'EMPTY_RESPONSE')
+			assert.equal(err.message, 'model returned a completed response with no content')
+			return true
+		}
+	)
+})
+
+await acheck('streamToText 把 finish 的 aborted 抛出，缺字段时有兜底', async () => {
+	await assert.rejects(
+		streamToText(fakeStream({ type: 'finish', reason: { kind: 'aborted' } })),
+		(err) => {
+			assert.equal(err.code, 'llm-aborted')
+			assert.match(err.message, /取消/)
+			return true
+		}
+	)
 })
 
 console.log(`\n${passed} 项通过`)

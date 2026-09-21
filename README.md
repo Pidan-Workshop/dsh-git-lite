@@ -162,7 +162,7 @@ bash uninstall.sh
 ```sh
 node --check lib/index.js
 node --check lib/client.js
-npm test                      # host 冒烟 34 项 + client 冒烟 46 项
+npm test                      # host 冒烟 40 项 + client 冒烟 49 项
 ```
 
 两个冒烟测试都不需要 DSH 运行时。
