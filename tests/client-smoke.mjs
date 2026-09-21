@@ -299,4 +299,41 @@ check('权威错误优先于 loading（错误的 branch 字段不该掩盖错误
 	assert.equal(chipState({ files: [] }, 'not a repo', 's1'), 'norepo')
 })
 
+// ── 失败时「清空」还是「保留上次值」 ───────────────────────────
+// 这是 loading 只出现在首次加载的关键：瞬态失败必须保留 brief，
+// 否则每次轮询抖动都会把胶囊打回加载态来回闪。
+const { onStatusFailure } = mod.__internals
+
+check('权威错误 → 清掉旧值并给出原因', () => {
+	for (const code of ['not-a-repo', 'no-workspace', 'workspace-unknown', 'outside-workspace']) {
+		const v = onStatusFailure({ code, message: 'boom-' + code })
+		assert.equal(v.clearBrief, true, code + ' 应清空')
+		assert.equal(v.errorText, 'boom-' + code)
+	}
+})
+
+check('session-unknown → 保留上次值（尚未就绪，不是没有仓库）', () => {
+	const v = onStatusFailure({ code: 'session-unknown', message: 'no live session with that id' })
+	assert.equal(v.clearBrief, false)
+	assert.equal(v.errorText, null)
+})
+
+check('无 code 的网络抖动 → 保留上次值', () => {
+	// 注意：vm 沙箱返回的对象原型与本 realm 不同，deepStrictEqual 会比较原型，
+	// 所以这里逐字段断言而不是整体比较。
+	for (const err of [new Error('Failed to fetch'), undefined]) {
+		const v = onStatusFailure(err)
+		assert.equal(v.clearBrief, false)
+		assert.equal(v.errorText, null)
+	}
+})
+
+check('保留上次值 + 已有 brief 时，状态仍是 ready（不闪回 loading）', () => {
+	// 模拟：先成功，再遇到一次瞬态失败 —— brief 保留，briefErr 未被设置。
+	const brief = briefOf('main')
+	const v = onStatusFailure({ code: 'session-unknown' })
+	const kept = v.clearBrief ? null : brief
+	assert.equal(chipState(kept, v.errorText, 's1'), 'ready')
+})
+
 console.log(`\n${passed} 项通过`)
