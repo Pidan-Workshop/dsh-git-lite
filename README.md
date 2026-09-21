@@ -78,6 +78,15 @@ dsh plugin --profile web add link:/path/to/dsh-git-lite   # 链接安装，改�
 
 **建议**：日常小改动用路径 1；改动背后有「为什么」要说清楚时，用路径 2。
 
+### 按钮顺序与说明
+
+提交区三个按钮的顺序刻意是 **`✨ 生成信息` → `交给 Agent 提交` → `提交`**：
+
+- 先两个「辅助 / AI」动作，**用户自己提交的按钮放最后**（主操作靠右）
+- 三个按钮**各带说明浮层** —— 因为光看标签分不清「生成信息 + 提交」与「交给 Agent 提交」
+  的区别（这条正是用户提问后补的：**能被使用者问出来，说明 UI 没讲清楚**）
+- 有一条测试钉住顺序与浮层存在，避免以后被随手改回去
+
 ## 安全模型
 
 这台插件把安全放在结构里，而不是放在字符串过滤里：
@@ -124,7 +133,7 @@ dsh plugin --profile web add link:/path/to/dsh-git-lite   # 链接安装，改�
 node --check lib/index.js
 node --check lib/client.js
 node tests/host-smoke.mjs     # 34 项：porcelain v2 解析、配置、鉴权拒绝面、包含关系回退、log/show 解析、路由装配
-node tests/client-smoke.mjs   # 53 项：注册点与 disposer + 浮层避让 + 胶囊状态机 + clamp + 日期分组 + 渲染层结构检查
+node tests/client-smoke.mjs   # 54 项：注册点与 disposer + 浮层避让 + 胶囊状态机 + clamp + 日期分组 + 渲染层检查
 npm test                      # 两个都跑
 ```
 
@@ -167,6 +176,43 @@ npm test                      # 两个都跑
 另有一条容易写反的边界：**`/status` 成功但拿不到 `branch` 不算 `ready`**（游离头等），落到 `loading` 而不是渲染一个空分支名。
 
 配套的重试节奏（`chipRetryDelay`）：未就绪期间 500ms 快重试，连续 12 次后回常规 6 秒节奏——没有它，胶囊会被一整个轮询周期卡住，表现为「过一会才刷出来」。
+
+## 样式与主题
+
+### 配色全部走 DSH 设计令牌
+
+`makeTheme()` 返回的每个颜色都是 `var(--dsw-<令牌>, <兜底>)` 形式 —— 令牌由
+`dsh-client-ui-theme` 定义（实测 368 个可选），每个令牌都有明暗两套值，由
+`body[data-ds-dark-theme]` 切换。
+
+**因此这里刻意不自己维护明暗两套色板，也不需要 `useDark()` / `matchMedia`**：
+
+| 好处 | 说明 |
+|---|---|
+| 配色一致 | 不再手搓一套近似色，面板与应用其它部分严格同色 |
+| 明暗自动跟随 | 令牌本身随主题变，无需监听系统配色，也无需重渲染 |
+| 跟随用户主题 | 第三方主题包覆盖令牌时，面板一起变 |
+
+兜底值是**必需的**，不是装饰：令牌缺失时（被裁剪的部署、旧版本）仍要能看。有测试断言
+「令牌必须写成 `var(令牌, 兜底)` 形式」以及「主按钮底色必须取品牌令牌」。
+
+用到的令牌：`label-primary` / `label-caption` / `label-primary-bluish` / `border-l2` /
+`bg-layer-1` / `interactive-bg-hover` / `brand-primary` / `button-primary-hover` /
+`state-success-primary` / `state-error-primary` / `scrollbar-*` / `font-mono`。
+
+半透明的 diff 底纹没有对应令牌，取一组在明暗两边都成立的 `rgba()` 值。
+
+### 交互态只能用样式表
+
+内联样式表达不了伪类，所以插件注入一张固定 id 的样式表（`ensurePanelStyle()`，幂等）：
+
+- **`:hover`** —— 按钮 / 文件行 / 提交卡片 / 分段控件 / 分支胶囊
+- **`:focus-visible`** —— 键盘可达性；只在键盘操作时出现，不干扰鼠标点击
+- **细滚动条** —— `::-webkit-scrollbar`，颜色取 `scrollbar-*` 令牌
+- **旋转动画 keyframes** —— 加载指示
+
+元素通过 `data-git-lite-*` 标记被样式表命中（`hoverable` / `btn` + `data-primary` /
+`seg` / `scroll` / `chip`）。这样做的额外好处是**测试可以直接断言这些标记存在于渲染树里**。
 
 ## 面板布局
 

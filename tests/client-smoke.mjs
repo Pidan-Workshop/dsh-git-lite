@@ -625,10 +625,8 @@ check('渲染出的样式里没有 undefined（曾把字典当主题用）', () 
 	assert.equal(bad.length, 0, '出现 undefined 样式：' + bad.slice(0, 5).join(', '))
 })
 
-check('主按钮用主题强调色，普通按钮用主题边框色', () => {
-	// 沙箱里没有 matchMedia，useDark() 返回 false → 浅色主题
-	const LIGHT_ACCENT = '#0969da'
-	const LIGHT_BORDER = '#d0d7de'
+check('主题色走 DSH 令牌（而不是自己维护明暗两套色板）', () => {
+	// 用令牌的好处：配色与应用一致，且**明暗主题自动跟随**（不需要 useDark）
 	const { nodes } = collect(renderPanel())
 	const buttons = nodes.filter((n) => n.type === 'button')
 	// 注意：树里靠前的 button 是分段控件的「变更/历史」，所以必须按文案找，
@@ -640,14 +638,42 @@ check('主按钮用主题强调色，普通按钮用主题边框色', () => {
 	const commit = findExact('提交')
 	assert.ok(commit, '找不到「提交」按钮')
 	assert.equal(commit.props.style.color, '#fff')
-	assert.equal(commit.props.style.background, LIGHT_ACCENT)
+	// 主按钮底色必须取品牌令牌并带兜底，而不是写死色值
+	assert.ok(
+		commit.props.style.background.indexOf('--dsw-alias-brand-primary') !== -1,
+		'主按钮底色应取品牌令牌，实际：' + commit.props.style.background
+	)
+	assert.ok(
+		commit.props.style.background.indexOf('var(') === 0,
+		'令牌必须写成 var(令牌, 兜底) 形式，实际：' + commit.props.style.background
+	)
 
 	const normal = find('生成信息')
 	assert.ok(normal, '找不到「生成信息」按钮')
 	assert.ok(
-		normal.props.style.border.indexOf(LIGHT_BORDER) !== -1,
-		'普通按钮边框应为主题边框色，实际：' + normal.props.style.border
+		normal.props.style.border.indexOf('--dsw-alias-border-l2') !== -1,
+		'普通按钮边框应取边框令牌，实际：' + normal.props.style.border
 	)
+
+	// 令牌缺失时必须有兜底（被裁剪的部署仍要能看）
+	assert.match(commit.props.style.background, /var\([^,]+,\s*[^)]+\)/)
+})
+
+check('用户自己的提交按钮排最后，且三个动作各带说明', () => {
+	// 明确的产品要求：辅助/AI 动作在前，用户自己的提交在最后（主操作靠右）
+	const { nodes } = collect(renderPanel())
+	const buttons = nodes.filter((n) => n.type === 'button')
+	const labels = ['✨ 生成信息', '交给 Agent 提交', '提交']
+	const idx = labels.map((l) => buttons.findIndex((b) => collect(b).texts.join('') === l))
+	assert.ok(idx.every((i) => i >= 0), '三个按钮都应存在，实际下标：' + idx.join(','))
+	assert.deepEqual(idx, [...idx].sort((a, b) => a - b), '顺序应为 生成信息 → 交给 Agent 提交 → 提交')
+	assert.equal(idx[2], Math.max(...idx), '「提交」必须在最后')
+
+	// 三个按钮都必须有说明浮层 —— 光看标签分不清两条提交路径的区别
+	for (const l of labels) {
+		const b = buttons.find((n) => collect(n).texts.join('') === l)
+		assert.ok(b.props.title && b.props.title.length > 10, l + ' 缺少说明浮层')
+	}
 })
 
 /** 渲染历史模式（带一条提交），供下面几条结构用例复用。 */
@@ -670,7 +696,11 @@ check('日期分组标题不加下边框（否则会横穿导轨）', () => {
 	})
 	assert.ok(header, '找不到分组标题行')
 	assert.equal(header.props.style.borderBottom, undefined, '标题行不应有下边框')
-	assert.equal(header.props.style.background, '#ffffff', 'sticky 需要不透明背景，否则滚动时下文透出来')
+	// sticky 需要**不透明**背景（否则滚动时下文透出来），所以取 bg-layer-1 令牌
+	assert.ok(
+		String(header.props.style.background).indexOf('--dsw-alias-bg-layer-1') !== -1,
+		'sticky 背景应取 bg-layer-1 令牌，实际：' + header.props.style.background
+	)
 })
 
 check('提交行是内缩圆角卡片，而不是通栏分隔线', () => {
@@ -680,7 +710,10 @@ check('提交行是内缩圆角卡片，而不是通栏分隔线', () => {
 	assert.ok(card, '找不到提交卡片')
 	assert.equal(card.props.style.borderBottom, undefined, '卡片不应有通栏下边框')
 	assert.equal(card.props.style.borderRadius, 6)
-	assert.equal(card.props.style.border, '1px solid #d0d7de')
+	assert.ok(
+		card.props.style.border.indexOf('--dsw-alias-border-l2') !== -1,
+		'卡片边框应取边框令牌，实际：' + card.props.style.border
+	)
 	assert.ok(card.props.style.margin !== undefined, '卡片需要外边距与相邻卡片分开')
 })
 
