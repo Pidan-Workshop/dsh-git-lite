@@ -3,6 +3,9 @@
  *   node tests/host-smoke.mjs
  */
 import assert from 'node:assert/strict'
+import { realpathSync } from 'node:fs'
+import { join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { apply, inject, name, normalizeConfig, parseStatus, resolveRepo } from '../lib/index.js'
 
 let passed = 0
@@ -118,7 +121,8 @@ function fakeCtx(overrides) {
 	return Object.assign(
 		{
 			sessions: { get: () => undefined },
-			workspaceRegistry: { resolveByPath: async () => undefined }
+			// list() 是包含关系回退路径要用的；给空实现，避免 TypeError 掩盖真实断言。
+			workspaceRegistry: { resolveByPath: async () => undefined, list: () => [] }
 		},
 		overrides
 	)
@@ -146,7 +150,7 @@ await rejects(
 	'cwd 不属于任何已注册工作区被拒',
 	fakeCtx({
 		sessions: { get: () => ({ header: { cwd: '/tmp' } }) },
-		workspaceRegistry: { resolveByPath: async () => undefined }
+		workspaceRegistry: { resolveByPath: async () => undefined, list: () => [] }
 	}),
 	's1',
 	'workspace-unknown'
@@ -155,7 +159,7 @@ await rejects(
 	'clientCwd 不属于任何已注册工作区时同样被拒（兜底不是后门）',
 	fakeCtx({
 		sessions: { get: () => ({ header: {} }) },
-		workspaceRegistry: { resolveByPath: async () => undefined }
+		workspaceRegistry: { resolveByPath: async () => undefined, list: () => [] }
 	}),
 	's1',
 	'workspace-unknown',
@@ -170,7 +174,7 @@ await rejects(
 	'回归：session.header.cwd 被读取（走到 git 检查而非 no-workspace）',
 	fakeCtx({
 		sessions: { get: () => ({ header: { cwd: '/tmp' } }) },
-		workspaceRegistry: { resolveByPath: async () => ({ path: '/tmp' }) }
+		workspaceRegistry: { resolveByPath: async () => ({ path: '/tmp' }), list: () => [] }
 	}),
 	's1',
 	'not-a-repo'
@@ -179,12 +183,48 @@ await rejects(
 	'header 缺 cwd 时 clientCwd 兜底生效（同样走到 git 检查）',
 	fakeCtx({
 		sessions: { get: () => ({ header: {} }) },
-		workspaceRegistry: { resolveByPath: async () => ({ path: '/tmp' }) }
+		workspaceRegistry: { resolveByPath: async () => ({ path: '/tmp' }), list: () => [] }
 	}),
 	's1',
 	'not-a-repo',
 	'/tmp'
 )
+
+// ── 包含关系回退（集成：用本仓库自己当真实 git 仓库）──────────────
+// workspaceRegistry.resolveByPath() 是**精确相等**匹配，cwd 落在工作区子目录时
+// 会返回 undefined。这条回归用本插件仓库当工作区、用它的 lib/ 子目录当会话 cwd，
+// 断言 resolveRepo 仍能解析出仓库根。
+{
+	const repoRoot = realpathSync(fileURLToPath(new URL('..', import.meta.url)))
+	const subdir = join(repoRoot, 'lib')
+	const ctx = {
+		sessions: { get: () => ({ header: { cwd: subdir } }) },
+		workspaceRegistry: {
+			resolveByPath: async () => undefined, // 模拟精确匹配漏掉子目录
+			list: () => [{ path: repoRoot }]
+		}
+	}
+	const repo = await resolveRepo(ctx, 's1')
+	assert.equal(repo.root, repoRoot)
+	passed += 1
+	console.log('  ✓ 包含关系回退：cwd 是工作区子目录时仍解析出仓库根')
+}
+
+{
+	// 反向：工作区不含该 cwd 时不能借回退蒙混过关。
+	await rejects(
+		'包含关系回退不放宽边界：cwd 在工作区之外仍被拒',
+		{
+			sessions: { get: () => ({ header: { cwd: '/tmp' } }) },
+			workspaceRegistry: {
+				resolveByPath: async () => undefined,
+				list: () => [{ path: realpathSync(fileURLToPath(new URL('..', import.meta.url))) }]
+			}
+		},
+		's1',
+		'workspace-unknown'
+	)
+}
 
 // ── 插件装配形状 ───────────────────────────────────────────────
 check('name / inject 契约', () => {

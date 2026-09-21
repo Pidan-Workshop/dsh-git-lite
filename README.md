@@ -122,7 +122,7 @@ dsh plugin --profile web add link:/path/to/dsh-git-lite   # 链接安装，改�
 ```sh
 node --check lib/index.js
 node --check lib/client.js
-node tests/host-smoke.mjs     # 22 项：porcelain v2 解析、配置归一化、鉴权拒绝面、路由装配
+node tests/host-smoke.mjs     # 24 项：porcelain v2 解析、配置归一化、鉴权拒绝面、包含关系回退、路由装配
 node tests/client-smoke.mjs   # 19 项：三个注册点 + 浮层避让几何
 npm test                      # 两个都跑
 ```
@@ -163,19 +163,54 @@ npm test                      # 两个都跑
 
 ## 已知坑与排查
 
-真机首跑踩到的两个坑，都已修复并补了回归测试，记在这里免得重犯：
+真机迭代踩到的坑，都已修复并补了回归测试：
 
 | 症状 | 根因 | 修法 |
 |---|---|---|
 | 面板显示 `this session has no working directory` | **`Session` 类没有顶层 `cwd`**。创建元数据挂在 `session.header.cwd` 上，所以 `session.cwd` 恒为 `undefined` | 读 `session.header.cwd`，并加 `clientCwd` 兜底（同样过工作区闸门） |
-| 分支胶囊不出现 | **下游症状**，不是独立 bug。`BranchChip` 在 `/status` 失败时返回 `null`，所以只要 cwd 解析失败，胶囊就静默消失 | 修好 cwd 即同时消失 |
+| 分支胶囊在部分会话里不出现 | **不是 bug**：那些会话的 cwd 真的不是 git 仓库。实测 215 个会话里 55 个如此（42 个在 `/Users/yomob/Demo`——该目录 `fatal: not a git repository`）。宿主如实返回 `not-a-repo` | 原先静默隐藏，无法区分「没有仓库」与「插件坏了」，改为显示弱化的**「无仓库」**胶囊，原因放 tooltip |
+| 会话 cwd 是工作区**子目录**时拿不到仓库 | `workspaceRegistry.resolveByPath()` 是**精确相等**匹配（`entity.path === canonical`），子目录返回 `undefined` | 加包含关系回退：取包含该 cwd 的、最长（最具体）的工作区根。边界不变——仓库根仍须落在同一工作区内 |
+
+### 快速判断某个会话为什么没有胶囊
+
+宿主会把原因放在 `error.code` 里，逐条对应：
+
+| code | 含义 |
+|---|---|
+| `no-workspace` | 会话没有 cwd，或 cwd 在磁盘上已不存在 |
+| `workspace-unknown` | cwd 不在任何已注册工作区之内 |
+| `not-a-repo` | cwd 所在的目录链上没有 `.git` |
+| `outside-workspace` | 仓库根在工作区之外（工作区是更大仓库的子目录） |
+
+一条命令批量体检（把会话 cwd 与 `~/.dsh/storages/workspace.json` 对照，并试跑 `git rev-parse`）：
+
+```sh
+node -e 'const fs=require("fs"),path=require("path"),zlib=require("zlib"),cp=require("child_process");
+const H=process.env.HOME, R=H+"/.dsh/sessions";
+const ws=Object.values(JSON.parse(fs.readFileSync(H+"/.dsh/storages/workspace.json")).tables.workspaces).map(w=>w.path);
+for(const d of fs.readdirSync(R)){const dp=path.join(R,d);if(!fs.statSync(dp).isDirectory())continue;
+for(const s of fs.readdirSync(dp)){const f=path.join(dp,s,"session.v3.jsonl.zstd");if(!fs.existsSync(f))continue;
+try{const h=JSON.parse(zlib.zstdDecompressSync(fs.readFileSync(f)).toString("utf8").split("\n")[0]);
+const c=h.cwd;let why;
+if(!fs.existsSync(c))why="目录已不存在";else if(!ws.includes(c))why="不属于任何工作区";
+else{try{cp.execSync("git -C "+JSON.stringify(c)+" rev-parse --show-toplevel",{stdio:"ignore"});why="OK 有仓库"}
+catch{why="不是 git 仓库"}}
+if(why!=="OK 有仓库")console.log(why.padEnd(16),c)}}catch{}}}' | sort | uniq -c | sort -rn
+```
 
 排查顺序建议：
 
 1. `POST /git-lite/status` 带一个假 sessionId —— 若返回 `session-unknown`，说明**宿主半区已加载且路由正常**；若 404，说明插件没被加载（查 profile 的 `cordis.patch.yml`）。
-2. 面板里的错误横幅就是宿主返回的 `error.message`，`error.code` 决定它属于哪一类（`no-workspace` / `workspace-unknown` / `not-a-repo` / `outside-workspace`）。
-3. 浏览器 console 里搜 `dsh-git-lite` —— 注册失败会打 `sidebar tab registration failed`。
-4. **改了 `lib/index.js` 必须重启 `dsh web`**（宿主半区在进程启动时加载）；只改 `lib/client.js` 刷新页面即可。
+2. 面板里的错误横幅就是宿主返回的 `error.message`，`error.code` 按上表定位。
+3. 浏览器 console 里搜 `dsh-git-lite` —— 注册失败会打 `xx registration failed`。
+4. 改了 `lib/index.js` **必须重启 `dsh web`**；只改 `lib/client.js` 刷新页面即可。**两者都改就要重启 + 刷新。**
+
+### 为什么改了 `lib/client.js` 之后光刷新有时不够
+
+`dsh-client-modules` 在**激活时**（宿主启动）用 `readFileSync` 把客户端 bundle 预读进内存，对外以
+`/plugins/??<id>/client.js&rev=<内容哈希>` 提供，并配 `cache-control: max-age=31536000, immutable`。
+那个 `rev` 是内容哈希，所以**缓存本身是安全的**（内容变了 URL 就变）；但 `rev` 是在启动时算的，
+所以不重启的话服务器只会发旧字节。**改完客户端半区也要重启，刷新才有意义。**
 
 ## License
 
