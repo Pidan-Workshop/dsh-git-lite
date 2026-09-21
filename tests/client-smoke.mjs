@@ -248,4 +248,25 @@ check('横向刚好相切（不重叠）不让位', () => {
 	assert.equal(geo([{ top: 850, left: 290, right: 400, height: 44 }]), 0)
 })
 
+// ── 胶囊的轮询节奏 ─────────────────────────────────────────────
+// 回归：切会话时第一次请求常常赶在会话就绪之前（宿主返回 session-unknown），
+// 若下一次要等一整个 6 秒轮询周期，用户就会看到「过一会才刷出来」。
+const { chipRetryDelay } = mod.__internals
+
+check('失败后立刻快重试，不再干等一个轮询周期', () => {
+	assert.equal(chipRetryDelay(1), 500, '第一次失败应 500ms 后重试')
+	assert.equal(chipRetryDelay(2), 500)
+	assert.ok(chipRetryDelay(1) < 6000, '必须远小于常规轮询间隔')
+})
+
+check('连续失败超过上限后退回常规节奏（不做无限快轮询）', () => {
+	assert.equal(chipRetryDelay(12), 500, '上限内仍快重试')
+	assert.equal(chipRetryDelay(13), 6000, '超限后回常规节奏')
+	assert.equal(chipRetryDelay(999), 6000)
+})
+
+check('成功（failures=0）后回到常规轮询间隔', () => {
+	assert.equal(chipRetryDelay(0), 6000)
+})
+
 console.log(`\n${passed} 项通过`)

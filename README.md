@@ -123,7 +123,7 @@ dsh plugin --profile web add link:/path/to/dsh-git-lite   # 链接安装，改�
 node --check lib/index.js
 node --check lib/client.js
 node tests/host-smoke.mjs     # 24 项：porcelain v2 解析、配置归一化、鉴权拒绝面、包含关系回退、路由装配
-node tests/client-smoke.mjs   # 19 项：三个注册点 + 浮层避让几何
+node tests/client-smoke.mjs   # 22 项：三个注册点 + 浮层避让几何 + 胶囊重试节奏
 npm test                      # 两个都跑
 ```
 
@@ -170,6 +170,7 @@ npm test                      # 两个都跑
 | 面板显示 `this session has no working directory` | **`Session` 类没有顶层 `cwd`**。创建元数据挂在 `session.header.cwd` 上，所以 `session.cwd` 恒为 `undefined` | 读 `session.header.cwd`，并加 `clientCwd` 兜底（同样过工作区闸门） |
 | 分支胶囊在部分会话里不出现 | **不是 bug**：那些会话的 cwd 真的不是 git 仓库。实测 215 个会话里 55 个如此（42 个在 `/Users/yomob/Demo`——该目录 `fatal: not a git repository`）。宿主如实返回 `not-a-repo` | 原先静默隐藏，无法区分「没有仓库」与「插件坏了」，改为显示弱化的**「无仓库」**胶囊，原因放 tooltip |
 | 会话 cwd 是工作区**子目录**时拿不到仓库 | `workspaceRegistry.resolveByPath()` 是**精确相等**匹配（`entity.path === canonical`），子目录返回 `undefined` | 加包含关系回退：取包含该 cwd 的、最长（最具体）的工作区根。边界不变——仓库根仍须落在同一工作区内 |
+| 分支胶囊要**等几秒**才出现 | 切会话时第一次 `/status` 常常赶在宿主把会话载入之前（此时如实返回 `session-unknown`，实测响应 <1ms），而下一次轮询要等一个完整的 6 秒周期 | 未拿到权威答复期间改为 **500ms 快重试**（连续 12 次后回常规节奏，不做无限快轮询）。同时 `session-unknown` 归类为「未就绪」而非「无仓库」：不显示弱化胶囊、面板也不弹红条 |
 
 ### 快速判断某个会话为什么没有胶囊
 
