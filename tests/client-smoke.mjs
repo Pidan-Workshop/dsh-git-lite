@@ -717,6 +717,20 @@ check('日期分组的标题与提交文字用同一个 gutter（导轨对齐）
 	// 节点应为「—◯—」：左右各一条对称横线（只画右边会不像 GitHub）
 	assert.equal(rightArms, leftArms, '节点左右横线数量应相等：left=' + leftArms + ' right=' + rightArms)
 	assert.ok(leftArms >= 1, '节点缺少左侧横线')
+
+	// 竖线与节点互斥：节点那一行不得再画竖线，否则节点上下会露出两小段残根
+	const isNode = (g) => g.children.some((c) => c && c.props && c.props.style && c.props.style.borderRadius === '50%')
+	const hasRail = (g) => g.children.some((c) => c && c.props && c.props.style && c.props.style.width === 1)
+	const nodeRows = gutters.filter(isNode)
+	const plainRows = gutters.filter((g) => !isNode(g))
+	assert.ok(nodeRows.length >= 1, '应有带节点的 gutter')
+	assert.ok(plainRows.length >= 1, '应有只画竖线的 gutter')
+	for (const g of nodeRows) {
+		assert.equal(hasRail(g), false, '节点行不应再画竖线（会露出上下残根）')
+	}
+	for (const g of plainRows) {
+		assert.equal(hasRail(g), true, '非节点行应画竖线')
+	}
 })
 
 console.log(`\n${passed} 项通过`)
