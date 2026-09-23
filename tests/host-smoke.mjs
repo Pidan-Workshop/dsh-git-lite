@@ -9,7 +9,11 @@ import { fileURLToPath } from 'node:url'
 import {
 	apply,
 	buildUserMessage,
+	conflictPaths,
+	conflictShape,
+	conflictDiffNote,
 	inject,
+	isUnmergedPath,
 	mergeCommitFiles,
 	name,
 	normalizeConfig,
@@ -110,6 +114,71 @@ check('尚无提交时 head 为 null 且不算游离', () => {
 	assert.equal(s.head, null)
 	assert.equal(s.detached, false)
 	assert.equal(s.branch, 'main')
+})
+
+// 未解决冲突（porcelain v2 的 `u` 记录）。实测形状：
+//   u UU N... 100644 100644 100644 100644 <h1> <h2> <h3> <path>
+const CONFLICT_SAMPLE = [
+	'# branch.head main',
+	'1 M. N... 100644 100644 100644 aaa bbb staged.js',
+	'1 .M N... 100644 100644 100644 aaa bbb modified.js',
+	'? fresh.txt',
+	'u UU N... 100644 100644 100644 100644 h1 h2 h3 both.js'
+].join('\0') + '\0'
+
+check('conflictPaths 只挑未解决条目', () => {
+	assert.deepEqual(conflictPaths(parseStatus(CONFLICT_SAMPLE)), ['both.js'])
+})
+
+check('没有冲突时 conflictPaths 为空（批量操作才放行）', () => {
+	assert.deepEqual(conflictPaths(parseStatus(SAMPLE)), [])
+})
+
+// `git ls-files -u -- <path>` 的真实形态：<mode> <sha> <stage>\t<path>
+// stage 1 = 共同祖先，2 = 本分支，3 = 对方。四种冲突的 stage 组合各不相同。
+const LS_UU = '100644 2d78854 1\tsrc/app.js\n100644 3acb198 2\tsrc/app.js\n100644 84f94d5 3\tsrc/app.js\n'
+const LS_AA = '100644 08e4756 2\tnotes/shared.md\n100644 afa6900 3\tnotes/shared.md\n'
+const LS_UD = '100644 07e18ef 1\tsrc/config.json\n100644 c6f47ac 2\tsrc/config.json\n'
+const LS_DU = '100644 07e18ef 1\tsrc/config.json\n100644 c6f47ac 3\tsrc/config.json\n'
+
+check('conflictShape 从 stage 组合认出四种冲突', () => {
+	assert.equal(conflictShape(LS_UU), 'UU')
+	assert.equal(conflictShape(LS_AA), 'AA')
+	assert.equal(conflictShape(LS_UD), 'UD')
+	assert.equal(conflictShape(LS_DU), 'DU')
+	assert.equal(conflictShape(''), null, '没有未合并条目时应为 null')
+	assert.equal(conflictShape('100644 2d78854 1\tsrc/app.js\n'), null, '只有共同祖先不是冲突')
+})
+
+check('conflictDiffNote 对 modify/delete 说清两条出路（git 给不出 diff）', () => {
+	// 实测 UD / DU 的 `git diff`（工作区与 --cached）都只回 "* Unmerged path"，
+	// 所以这种冲突必须由宿主补一段说明，否则面板里就是一片空白。
+	const note = conflictDiffNote('src/config.json', 'UD')
+	assert.match(note, /modify\/delete/)
+	assert.match(note, /UD = 本分支修改、对方删除/)
+	assert.match(note, /git add src\/config\.json/)
+	assert.match(note, /git rm src\/config\.json/)
+	assert.match(conflictDiffNote('x.txt', 'DU'), /DU = 本分支删除、对方修改/)
+	assert.match(conflictDiffNote('x.txt', null), /冲突尚未解决/)
+})
+
+check('isUnmergedPath 只看指定路径（批量闸门不能连坐无关文件）', () => {
+	const s = parseStatus(CONFLICT_SAMPLE)
+	assert.equal(isUnmergedPath('both.js', s), true)
+	assert.equal(isUnmergedPath('modified.js', s), false, '普通改动文件不该被判成冲突')
+	assert.equal(isUnmergedPath('nope.txt', s), false)
+})
+
+check('解析器把冲突条目判成 staged（所以客户端分组必须显式排除 unmerged）', () => {
+	// `u UU` 的 XY 是 'UU'，makeFile 里 `staged = x !== '.'` 于是为 true ——
+	// 冲突文件因此**同时**满足 staged 与 unstaged。客户端据此在三个分组的 filter 里
+	// 显式排除 unmerged，让冲突单独成一组；这条用例钉住的是解析器这个事实本身，
+	// 免得以后有人「顺手」去掉客户端那两处 `!f.unmerged` 而没人发现。
+	// 「冲突文件到底显示在哪一组」不再靠口头记忆。
+	const f = parseStatus(CONFLICT_SAMPLE).files.filter((x) => x.unmerged)[0]
+	assert.equal(f.index, 'U')
+	assert.equal(f.staged, true)
+	assert.equal(f.unstaged, true)
 })
 
 check('无上游时 behind/ahead 为 0', () => {
@@ -390,6 +459,57 @@ check('路由处理器对未知路径返回 404 且拒绝非 POST', async () => 
 	await handler({ method: 'POST', url: '/git-lite/nope', on: () => {} }, fakeRes())
 	assert.equal(statuses[1], 404)
 	assert.match(bodies[1], /unknown route/)
+})
+
+// 两条新的批量路由必须真的装配上，而不是悄悄 404。
+// 用一个不存在的 sessionId 打进去：能落到宿主鉴权闸门（session-unknown）
+// 就说明路由存在且 withRepo 包装生效。（真实 git 行为不在冒烟测试里跑。）
+await acheck('新增的批量路由已装配（假 sessionId 得到 session-unknown，而不是 404）', async () => {
+	const registered = []
+	const ctx = {
+		webServer: {
+			register: (opts) => {
+				registered.push(opts)
+				return () => {}
+			}
+		},
+		// 路由要过 resolveRepo 的第一道闸门，所以这里必须有 sessions。
+		sessions: { get: () => undefined },
+		inject: () => () => {},
+		effect: (fn) => fn()
+	}
+	apply(ctx, {})
+	const handler = registered[0].handler
+
+	async function post(path) {
+		const statuses = []
+		const bodies = []
+		const listeners = {}
+		const req = {
+			method: 'POST',
+			url: path,
+			on: (ev, cb) => {
+				listeners[ev] = cb
+				return req
+			},
+			destroy: () => {}
+		}
+		const done = handler(req, {
+			writeHead: (s) => statuses.push(s),
+			end: (b) => bodies.push(b)
+		})
+		listeners.data(Buffer.from(JSON.stringify({ sessionId: 'ghost' })))
+		listeners.end()
+		await done
+		return { status: statuses[0], body: JSON.parse(bodies[0]) }
+	}
+
+	for (const path of ['/git-lite/stage-all', '/git-lite/unstage-all']) {
+		const r = await post(path)
+		assert.notEqual(r.status, 404, path + ' 未被装配（404）')
+		assert.equal(r.body.ok, false, path)
+		assert.equal(r.body.error.code, 'session-unknown', path + ' 应落到鉴权闸门')
+	}
 })
 
 // ── LLM 调用契约 ───────────────────────────────────────────────

@@ -717,6 +717,219 @@ check('用户自己的提交按钮排最后，且三个动作各带说明', () =
 	}
 })
 
+/** 渲染变更模式（注入一份 status），供批量按钮与冲突分组的用例复用。 */
+function renderChanges(filesJson) {
+	return renderPanel((s) =>
+		s.replace(
+			'var [status, setStatus] = React.useState(null)',
+			'var [status, setStatus] = React.useState({branch:"main",files:' + filesJson + '})'
+		)
+	)
+}
+
+// index / worktree 是真实现场一定有的字段（makeFile 总会填），
+// 所以夹具也照填 —— 缺了它们状态字母会渲染成 undefined。
+const TWO_FILES =
+	"[{path:'b.js',staged:false,index:'.',worktree:'M',untracked:false,unmerged:false},{path:'a.js',staged:true,index:'M',worktree:'.',untracked:false,unmerged:false}]"
+// 三个分组同时在场：冲突 / 已暂存 / 变更。用来验证冲突**单独成组**且排在最后面之前。
+const WITH_CONFLICT =
+	"[{path:'both.js',staged:true,index:'U',worktree:'U',untracked:false,unmerged:true},{path:'a.js',staged:true,index:'M',worktree:'.',untracked:false,unmerged:false},{path:'b.js',staged:false,index:'.',worktree:'M',untracked:false,unmerged:false}]"
+
+/** 找组头行：它的文本恰好是 [标签, 右端动作] 两段。 */
+function findHeader(panel, label, actionLabel) {
+	const { nodes } = collect(panel)
+	return nodes.find((n) => {
+		const texts = collect(n).texts
+		return texts.length === 2 && texts[0] === label && texts[1] === actionLabel
+	})
+}
+
+check('「变更」组头右端是「全部暂存」，「已暂存」组头右端是「全部取消暂存」', () => {
+	const panel = renderChanges(TWO_FILES)
+	const changes = findHeader(panel, '变更', '全部暂存')
+	assert.ok(changes, '找不到「变更」组头，或它右端没有「全部暂存」')
+	const staged = findHeader(panel, '已暂存', '全部取消暂存')
+	assert.ok(staged, '找不到「已暂存」组头，或它右端没有「全部取消暂存」')
+
+	// 组头仍然只占原来那一行：标签 flex:1 吃掉剩余宽度，动作靠右。
+	// （这也是选「组头」而不是新增工具行的原因 —— 不额外吃竖向空间。）
+	const spans = collect(changes).nodes.filter((n) => n.type === 'span')
+	assert.equal(spans[0].props.style.flex, '1 1 auto')
+	assert.equal(spans[0].props.style.minWidth, 0)
+	const btns = collect(changes).nodes.filter((n) => n.type === 'button')
+	assert.equal(btns.length, 1)
+	assert.equal(btns[0].props.style.border, '1px solid transparent', '小号动作按钮应无边框')
+	assert.ok(String(btns[0].props.title).length > 5, '批量动作缺少说明浮层')
+	assert.equal(btns[0].props.disabled, false)
+
+	// 状态字母：颜色必须来自 theme（曾经读字典里的 t.dim/t.del/t.add，恒为 undefined）。
+	// 这条断言让「字典当主题用」这种错法在渲染层被钉住。
+	const letters = collect(panel).nodes.filter((n) => n.type === 'span' && n.props.style.width === 13)
+	assert.ok(letters.length >= 2, '应有状态字母节点')
+	for (const l of letters) {
+		assert.equal(typeof l.props.style.color, 'string', '状态字母颜色不该是 undefined')
+		assert.ok(String(l.props.style.color).indexOf('--dsw-') !== -1, '颜色应走设计令牌')
+	}
+})
+
+check('冲突单独成一组：组头在最前、冲突文件挂在它下面、两条批量按钮禁用、并给出「Agent 解决冲突」', () => {
+	const panel = renderChanges(WITH_CONFLICT)
+	const { nodes, texts } = collect(panel)
+	const header = findHeader(panel, '1 个文件处于冲突状态', 'Agent 解决冲突')
+	assert.ok(header, '找不到冲突分组，或它组头右端没有「Agent 解决冲突」')
+
+	const buttons = nodes.filter((n) => n.type === 'button')
+	const resolve = buttons.find((b) => collect(b).texts.join('') === 'Agent 解决冲突')
+	assert.ok(resolve, '有冲突时必须给出「Agent 解决冲突」这条出路')
+	assert.ok(String(resolve.props.title).length > 10, '「Agent 解决冲突」缺少说明浮层')
+
+	// 分组顺序与归属：列表是「组头 + 若干行」的扁平数组，所以按文本出现次序断言归属。
+	// 注意顶部的「变更 / 历史」分段控件里也有「变更」二字，所以找分组标题要**从后往前**找，
+	// 否则会命中分段控件、把位置比较全部带偏。
+	const at = (s, from) => texts.indexOf(s, from === undefined ? 0 : from)
+	assert.ok(at('both.js') !== -1 && at('a.js') !== -1 && at('b.js') !== -1, '三个文件行都应渲染')
+	const conflictLabel = at('1 个文件处于冲突状态')
+	const stagedLabel = at('已暂存')
+	const changesLabel = at('变更', stagedLabel)
+	assert.ok(conflictLabel !== -1 && stagedLabel !== -1 && changesLabel !== -1, '三个组头都应渲染')
+	assert.ok(conflictLabel < at('both.js'), '冲突文件应排在冲突组头下面')
+	assert.ok(at('both.js') < stagedLabel, '冲突组必须排在「已暂存」之前')
+	assert.ok(stagedLabel < at('a.js') && at('a.js') < changesLabel, 'a.js 应属于「已暂存」组')
+	assert.ok(changesLabel < at('b.js'), 'b.js 应属于「变更」组')
+	// 冲突文件不能同时冒进「已暂存」组（解析器把 unmerged 判成 staged:true，靠 filter 排除）
+	const stagedHeader = findHeader(panel, '已暂存', '全部取消暂存')
+	assert.equal(collect(stagedHeader).texts.indexOf('both.js'), -1, '冲突文件不得出现在「已暂存」组')
+
+	// 禁用而不是隐藏：让「为什么点不了」看得见，而不是按钮凭空消失
+	const stageAll = buttons.find((b) => collect(b).texts.join('') === '全部暂存')
+	assert.ok(stageAll, '「全部暂存」应仍然可见')
+	assert.equal(stageAll.props.disabled, true, '有冲突时不得允许全部暂存（add -A 会标成已解决）')
+	assert.match(String(stageAll.props.title), /冲突/)
+
+	const unstageAll = buttons.find((b) => collect(b).texts.join('') === '全部取消暂存')
+	assert.equal(unstageAll.props.disabled, true, '有冲突时也不得全部取消暂存（会丢掉冲突状态）')
+})
+
+check('没有冲突时不出现冲突分组与「Agent 解决冲突」', () => {
+	const { nodes, texts } = collect(renderChanges(TWO_FILES))
+	assert.equal(texts.filter((x) => x.indexOf('冲突状态') !== -1).length, 0, '不该有冲突分组')
+	assert.equal(
+		nodes.filter((n) => n.type === 'button' && collect(n).texts.join('') === 'Agent 解决冲突').length,
+		0
+	)
+})
+
+check('冲突行右端是不可点的「!」，而不是 −/+', () => {
+	// 「先点 − 再点 +」= 把冲突文件送进「变更」组拿到 +，再 add ——
+	// 实测提交进去的就是 <<<<<<< HEAD ... ======= ... >>>>>>> 这段标记文本。
+	const panel = renderChanges(WITH_CONFLICT)
+	const { nodes } = collect(panel)
+	const rows = nodes.filter((n) => n.props && n.props['data-git-lite-hoverable'] === '')
+	assert.ok(rows.length >= 3, '应渲染出三个文件行，实际 ' + rows.length)
+	const rowOf = (p) => rows.find((r) => collect(r).texts.indexOf(p) !== -1)
+
+	const conflictRow = rowOf('both.js')
+	assert.ok(conflictRow, '找不到冲突文件行')
+	const cTexts = collect(conflictRow).texts
+	assert.ok(cTexts.indexOf('!') !== -1, '冲突行应有 ! 标记，实际：' + cTexts.join('|'))
+	assert.equal(cTexts.indexOf('−'), -1, '冲突行不得有减号')
+	assert.equal(cTexts.indexOf('+'), -1, '冲突行不得有加号')
+
+	const bang = collect(conflictRow).nodes.find((n) => n.type === 'span' && collect(n).texts.join('') === '!')
+	assert.ok(bang, '找不到 ! 节点')
+	assert.equal(bang.props.onClick, undefined, '! 不该可点（它只表示「这里不能暂存」）')
+	assert.ok(String(bang.props.title).length > 10, '! 应带 tooltip 说明为什么不能暂存')
+	assert.ok(
+		String(bang.props.style.color).indexOf('--dsw-alias-state-error-primary') !== -1,
+		'! 应取错误色令牌，实际：' + bang.props.style.color
+	)
+
+	// 普通文件行不受影响
+	assert.ok(collect(rowOf('b.js')).texts.indexOf('+') !== -1, '未暂存行应有 +')
+	assert.ok(collect(rowOf('a.js')).texts.indexOf('−') !== -1, '已暂存行应有 −')
+})
+
+check('选中冲突文件时，详情区不提供「暂存 / 取消暂存」（后端也会拒绝）', () => {
+	const withSel = (filesJson, selectedJson) =>
+		renderPanel((s) =>
+			s
+				.replace(
+					'var [status, setStatus] = React.useState(null)',
+					'var [status, setStatus] = React.useState({branch:"main",files:' + filesJson + '})'
+				)
+				.replace(
+					'var [selected, setSelected] = React.useState(null)',
+					'var [selected, setSelected] = React.useState(' + selectedJson + ')'
+				)
+		)
+	const labelsOf = (panel) =>
+		collect(panel)
+			.nodes.filter((n) => n.type === 'button')
+			.map((b) => collect(b).texts.join(''))
+
+	const conflict = labelsOf(withSel(WITH_CONFLICT, "{path:'both.js',staged:false}"))
+	assert.equal(conflict.indexOf('暂存'), -1, '冲突文件不该有「暂存」')
+	assert.equal(conflict.indexOf('取消暂存'), -1, '冲突文件不该有「取消暂存」')
+
+	// 普通文件照旧：已暂存 → 「取消暂存」，未暂存 → 「暂存」
+	assert.ok(labelsOf(withSel(TWO_FILES, "{path:'a.js',staged:true}")).indexOf('取消暂存') !== -1)
+	assert.ok(labelsOf(withSel(TWO_FILES, "{path:'b.js',staged:false}")).indexOf('暂存') !== -1)
+})
+
+check('有冲突时「提交」按钮禁用并说明原因（禁止把 git 的英文 hint/fatal 丢给用户）', () => {
+	// 真机反馈：只暂存了部分文件、没勾「全部暂存」就点提交 —— 宿主的冲突闸门当时只在
+	// stageAll 分支里，于是 `git commit` 直接失败，面板红条里出现了
+	// "error: Committing is not possible because you have unmerged files. hint: ... fatal: ..."
+	const labelsOf = (panel) =>
+		collect(panel)
+			.nodes.filter((n) => n.type === 'button')
+
+	const conflictCommit = labelsOf(renderChanges(WITH_CONFLICT)).find(
+		(b) => collect(b).texts.join('') === '提交'
+	)
+	assert.ok(conflictCommit, '找不到「提交」按钮')
+	assert.equal(conflictCommit.props.disabled, true, '有冲突时提交必须禁用（git 一定拒绝）')
+	assert.match(String(conflictCommit.props.title), /冲突/)
+
+	// 没有冲突时照旧可用，且浮层回到原本的说明
+	const normalCommit = labelsOf(renderChanges(TWO_FILES)).find((b) => collect(b).texts.join('') === '提交')
+	assert.equal(normalCommit.props.disabled, false)
+	assert.equal(normalCommit.props.title.indexOf('冲突'), -1)
+})
+
+check('有文件 / 有冲突时渲染出的样式里同样没有 undefined（新按钮只在有文件时才渲染）', () => {
+	// 上面那条 undefined 样式用例渲染的是空工作区，走不到新加的 MiniBtn 与冲突横幅
+	for (const fixture of [TWO_FILES, WITH_CONFLICT]) {
+		const { nodes } = collect(renderChanges(fixture))
+		const bad = []
+		for (const n of nodes) {
+			const style = n.props && n.props.style
+			if (!style) continue
+			for (const k of Object.keys(style)) {
+				const v = style[k]
+				if (v === undefined || (typeof v === 'string' && v.indexOf('undefined') !== -1)) {
+					bad.push(k + '=' + String(v))
+				}
+			}
+		}
+		assert.equal(bad.length, 0, '出现 undefined 样式：' + bad.slice(0, 5).join(', '))
+	}
+})
+
+check('zh / en 字典的键一一对应（漏一个键只会渲染成空标签，逻辑测试发现不了）', () => {
+	const zhAt = src.indexOf('zh: {')
+	const enAt = src.indexOf('en: {')
+	const end = src.indexOf('\n\t\t\t}\n\t\t}', enAt)
+	assert.ok(zhAt > 0 && enAt > zhAt && end > enAt, '字典边界没找到，本用例需要跟着格式更新')
+	const keysOf = (block) =>
+		Array.from(block.matchAll(/^\s*([A-Za-z][A-Za-z0-9]*):/gm)).map((m) => m[1]).sort()
+	const zhKeys = keysOf(src.slice(zhAt + 'zh: {'.length, enAt))
+	const enKeys = keysOf(src.slice(enAt + 'en: {'.length, end))
+	assert.deepEqual(zhKeys, enKeys, 'zh / en 字典键不一致')
+	// 下限只是防止正则失配后「两个空数组也相等」把用例变成假绿
+	assert.ok(zhKeys.length >= 55, '字典键数量异常：' + zhKeys.length)
+})
+
 /** 渲染历史模式（带一条提交），供下面几条结构用例复用。 */
 const LOG_FIXTURE =
 	"{commits:[{sha:'a1',short:'a1',subject:'x',author:'me',date:'2026-09-12T12:00:00Z',refs:[]}],hasMore:false}"

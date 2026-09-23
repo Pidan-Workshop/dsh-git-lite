@@ -279,6 +279,108 @@ keyframes、`:hover`、`:focus-visible`、细滚动条。
 - 两条新路由（`/log`、`/show`）是**只读**的，且与其它路由共用同一个 `resolveRepo` 鉴权闸门；
   sha 经过 `^[0-9a-fA-F]{4,40}$` 校验，同时挡掉以 `-` 开头的伪参数。
 
+## 批量暂存按钮放哪里：三个候选与取舍
+
+需求是「一键把工作区全部改动加进暂存区」。位置候选只有三个，差别在**离作用对象多近**、
+**会不会被滚走**、**占不占高度**：
+
+| | 额外高度 | 总是可见 | 语义贴切 | 结论 |
+|---|---|---|---|---|
+| **分组标题右端**（现方案） | **0** | ✗ 随列表滚走 | 高 | ✅ |
+| 列表上方独立工具行 | +26px | ✓ | 高 | ✗ 白吃竖向空间 |
+| 提交区按钮行 | 0（还能省一行） | ✓ | 中 | ✗ 把「索引级」动作混进「提交级」 |
+| 顶部操作条 | +0~26px（换行） | ✓ | 低 | ✗ 与拉取/推送等仓库级操作不同层 |
+
+选组头的四个理由：
+
+1. **零额外高度**，而且组头右端本来就是空的（`sectionStyle` 只有左对齐的一行 10px 小字）。
+   这个面板最缺的就是竖向空间 —— 「列表 / diff 的高度分配」整节都在解决这件事。
+2. **作用对象就在下面**：`add -A` 影响的正是「变更 / 未跟踪」这一整组。
+3. **天然对称**：顺手补上了此前完全缺失的批量取消暂存（以前只能逐行点 `−`）。
+4. 组头动作小且无边框（`MiniBtn`，不是复用 `Btn` 那个 11px 带框按钮），
+   所以不会把 10px 的组头撑高。
+
+**明确接受的代价**（免得以后当成 bug）：**变更模式的组头不是 sticky，所以列表滚下去时按钮会滚出视野。**
+sticky 的只有历史模式的分组标题（`groupHeaderStyle`）；本次没有改（要改得新增 sticky 容器，
+且两个 sticky 组头会互相顶替）。如果以后觉得可发现性不够，正确的下一步是给变更模式组头加 sticky，
+而不是把按钮搬走。
+
+## 冲突：两条批量按钮都拒绝，并给出唯一出路
+
+实测（临时仓库 + 回归测试）两件事，决定了这一节的全部设计：
+
+- porcelain v2 里未解决条目是 `u UU ...`，而 `makeFile` 的 `staged = x !== '.'` 判成 **true**
+  —— 冲突文件因此**同时**满足 staged 与 unstaged。客户端的三个分组里都要**显式排除 unmerged**
+  （`!f.unmerged && …`），否则冲突文件会同时冒进「已暂存」组。解析器这个事实本身有单测钉住，
+  免得以后有人「顺手」删掉客户端那两处 `!f.unmerged`。
+- 冲突状态下跑 `git add -A`，状态从 `u UU ...` 变成 `1 M. ...`：**冲突被静默标记为已解决**，
+  冲突标记就此进入暂存区。这不是「多暂存了几个文件」（取消暂存即可挽回），而是只能改历史。
+
+因此：
+
+- **冲突单独成一组**，排在列表最前面（`冲突 / 已暂存 / 变更 / 未跟踪`）。它是唯一**不共用
+  `sectionHeader`** 的组头：带警示底色（`state-error` 令牌 + `delBg`）而不是普通 10px 灰字，
+  因为它是异常状态而不是普通分组。冲突文件行挂在它下面，按 `fileRow(f, false, true)` 渲染 ——
+  `staged: false` 是为了让 diff 走工作区那条路（见下面「冲突的 diff」）。
+- **`/stage-all` 与 `/commit` 都要堵，而且 `/commit` 是整体堵**（勾没勾「全部暂存」都一样：有未解决
+  条目时 git 一律拒绝提交）。闸门的位置有个坑：它必须放在「暂存区为空」那道检查**之前** ——
+  实测 `git diff --cached --name-only` **会**把未解决条目列出来，所以那道检查挡不住冲突。
+  第一版正是把闸门只写在 `stageAll` 分支里，于是「只暂存了部分文件、没勾复选框、直接点提交」
+  这条最普通的路径漏了出去，面板红条里出现了 git 的英文原文（见「已知坑」）。
+- **反向的 `/unstage-all` 也拒绝**：`git restore --staged` 会把未解决条目标回 HEAD，等于丢掉冲突状态。
+  两边都不是可撤销的后果，所以一并拒绝。
+- 判定与 UI **共用同一份 `collectStatus`**（同一个 `unmerged` 概念），不另起一套 `--diff-filter=U`，
+  免得宿主与面板对「什么算冲突」理解不一致。闸门抽成 `assertNotConflicted()`，
+  路径判定抽成纯函数 `conflictPaths(status)` 以便单测。
+- UI 上**禁用而不是隐藏**两条批量按钮（让「为什么点不了」看得见）；冲突组头右端放
+  「Agent 解决冲突」：复用「交给 Agent 提交」那条通道（`binding.session.prompt`，等价于用户自己打字），
+  只是这次只要它解决冲突。提示词带上冲突文件路径（最多 10 个），末尾明确「只解决冲突，不要提交」。
+
+### 冲突行不给 `−`/`+`（真机反馈后补的）
+
+第一版只堵了批量入口，**逐文件的 `−`/`+` 是开着的**，而且这两个按钮连起来就是一条完整的坑：
+
+```
+点 −  →  git restore --staged  →  未解决条目标回 HEAD
+       文件状态从 `UU` 变成 ` M`  →  掉进「变更」组，右侧变成 `+`
+点 +  →  git add              →  冲突被标记为「已解决」
+       工作区里的 <<<<<<< HEAD / ======= / >>>>>>> 原样进索引
+提交   →  标记文本成为提交内容
+```
+
+实测（临时仓库 + `git show HEAD:f.txt`）确认提交进去的就是那三行标记。所以现在的做法是：
+
+- **冲突行的右侧是不可点的 `!`**（`state-error` 色 + tooltip 说明原因），不是 `−`/`+`；
+- **详情区不提供暂存 / 取消暂存**（`bottomAction = null`）—— 否则点下去只会撞上服务端拒绝；
+- **`/stage` 与 `/unstage` 在宿主侧对 unmerged 路径直接拒绝**（`isUnmergedPath()`），
+  与批量闸门共用同一个 unmerged 概念。客户端已经不给入口，这里是纵深防御：
+  以后谁再加一个「暂存这个文件」的按钮，也不会绕过闸门。
+
+### 冲突的 diff：为什么原来是一片「* Unmerged path」
+
+面板原来对冲突行请求的是**已暂存** diff（`git diff --cached -- <path>`），而 git 对**任何**未解决
+冲突都只回一行 `* Unmerged path <path>` —— 这就是真机上那一块空白。实测三种冲突：
+
+| 冲突 | `git diff --cached` | `git diff`（工作区） |
+|---|---|---|
+| `UU` 两边改同一段 | `* Unmerged path` | ✅ `diff --cc` + `<<<<<<<` 标记 |
+| `AA` 双方新增 | `* Unmerged path` | ✅ `diff --cc` + `<<<<<<<` 标记 |
+| `UD`/`DU` modify/delete | `* Unmerged path` | ❌ 仍然只有 `* Unmerged path` |
+
+所以 `/diff` 现在先看 `git ls-files -u -- <path>`：非空即为冲突，改走**工作区** diff；
+拿到占位文本（或空）时用 `conflictDiffNote(path, shape)` 给一段说明 ——
+`conflictShape()` 从 stage 组合（1=共同祖先 / 2=本分支 / 3=对方）认出 `UU`/`AA`/`UD`/`DU`，
+两个都是纯函数、都有单测。冲突行因此请求 `staged: false`（`fileRow(f, false, true)`）。
+
+顺带一个反直觉的实测：冲突文件右侧的 `+N −N` **本来就来自工作区 diff**——
+`--cached --numstat` 对未解决条目给 `0 0`，而随后的 `--numstat`（工作区）用真实值覆盖了它。
+也就是说数字一直是对的，坏掉的只有 diff 内容。
+
+`/stage-all` 返回「暂存区里现在有多少文件」（为 0 时客户端提示「没有可暂存的改动」）——
+`add -A` 在干净工作区是幂等 no-op，没有反馈的话按钮点下去像坏了。
+`/unstage-all` 与单文件 `/unstage` 同一套两步回退：未提交仓库里 `git restore --staged` 必然失败
+（实测 `fatal: could not resolve HEAD`），而 `git reset --quiet` 在那种仓库里 exit 0 且能清空索引。
+
 ## 已知坑与排查
 
 真机迭代踩到的坑，都已修复并补了回归测试：
@@ -291,6 +393,9 @@ keyframes、`:hover`、`:focus-visible`、细滚动条。
 | Git 标签页显示「这类内容还没有可用的查看方式。」（`tab.unavailable`） | **客户端 HMR 热重载会重跑 `apply()`**。我丢弃了 `sidebarRightTabs.register` 返回的 disposer —— 而它的契约原文是 *"The caller holds the returned disposer inside its own `ctx.effect`, so a type's registration lives exactly as long as the plugin that contributed it."* 注册因此活过本代插件，重载后撞上 `tab type id "git-lite" is already registered`；旧代码的**单个 try/catch** 吞掉这一抛并**跳过了后面的主体与标题注册**，两个 seat 同时缺失 | 每个注册各自 `ctx.effect(..., label)` 持有 disposer，四次注册互不连累；并且**冲突还要重试**——HMR 下新代 `apply()` 可能早于旧代 dispose，此时 id 仍被占着，光持有 disposer 救不了当次注册。`hang()` 对 `already registered` 这类**暂时**冲突按 60ms × 20 次重试（旧代释放后即补上），其余错误立刻打日志不空等。三条回归测试：disposer 是否被持有、单点失败是否仍注册其余、冲突是否重试并最终注册上 |
 | 点「✨ 生成信息」只报**「模型没有返回提交信息」**，看不出真实原因 | 两个缺陷叠加：① `messages` 传成 `[{ role: 'user', content: '<裸字符串>' }]`，而 dsh-llm 契约要求 content 是**块数组**且消息带 `id` / `source` —— 适配器 `serializeMessages` 对 content 调 `.filter()` 直接抛错；② 该失败被 runtime 包成终止分片 `{ type: 'finish', reason: { kind: 'error', failure } }`，而 `streamToText` 只挑 `text-delta`，**把终止分片整条吞掉**，于是只剩空字符串，最后报出这句与真正原因无关的话 | `buildUserMessage()` 按契约组装（块数组 + `randomUUID()` 的 id + `plugin` source）；`streamToText()` 显式读 `finish`，`reason.kind` 为 `error` / `aborted` 时抛出提供方的 `failure.code` 与 `failure.message`（缺字段时有兜底文案）。6 条回归测试钉住消息形状与终止分片处理 |
 | 「提交」按钮白字看不见、其它按钮描边发黑 | **`Btn` 把 `props.t`（i18n 字典）当成 theme 用**，于是 `t.fg` / `t.accent` / `t.border` 全是 `undefined`：主按钮 `background: undefined` → 白字无底色；普通按钮 `1px solid undefined` 是**非法 CSS**，整条声明被丢弃后回退成浏览器默认边框 | `Btn` 改为同时接收 `theme`（颜色）与 `t`（文案）。并补了**渲染层**测试：渲染整棵树后断言「任何样式值都不得是 undefined」——逻辑测试全绿也发现不了这类纯 UI 症状 |
+| 状态字母（`M` / `A` / `?` / `U` / `D`）的颜色不生效 | 同一类错误的第二例：`StatusLetter` 读的是 `t.dim` / `t.del` / `t.add`，而 `t` 是 i18n 字典 —— 这些键不存在，`color` 恒为 `undefined`，字母只能用继承色。**上面那条渲染层测试没能拦住它，因为它渲染的是空工作区（一条文件行都没有）** | `StatusLetter` 改收 `theme`。并补一条**带文件**的渲染用例（含冲突夹具）：新组件与状态字母的样式都不得出现 `undefined`。教训：渲染层测试必须覆盖「只有有数据时才渲染」的分支 |
+| 冲突文件能「先点 `−` 再点 `+`」，于是冲突标记进了提交 | 冲突行按 `fileRow(f, true)` 渲染，右侧因此是 `−`。点它 = `git restore --staged`：未解决条目标回 HEAD，状态从 `UU` 变成 ` M`，文件掉进「变更」组、拿到一个 `+`；再点 `+` = `git add`，冲突被标记为**已解决**。实测 `git show HEAD:f.txt` 拿到的就是 `<<<<<<< HEAD` / `=======` / `>>>>>>>` 三行标记文本 | 冲突行改为 `fileRow(f, false, true)`：右侧换成**不可点的 `!`**（错误色 + tooltip 说明），详情区不再给暂存/取消暂存，宿主 `/stage` 与 `/unstage` 对 unmerged 路径直接拒绝（`isUnmergedPath()`）。顺带把冲突行的 diff 从 `--cached`（git 一律只回 `* Unmerged path`）改成**工作区 diff**（UU/AA 才拿得到 `diff --cc` 标记），modify/delete 这类连工作区 diff 都没有的，用 `conflictDiffNote()` 说明是哪种冲突与两条出路 |
+| 面板红条里出现 `error: Committing is not possible because you have unmerged files. hint: … fatal: …` | 冲突闸门只写在 `/commit` 的 `stageAll` 分支里。**没勾「全部暂存」、只暂存了部分文件、直接点提交**这条最普通的路径绕过了闸门；而「暂存区为空」那道检查也挡不住它 —— 实测 `git diff --cached --name-only` **会**把未解决条目列出来。于是 `git commit` 直接失败，`/commit` 把 git 的 stderr 原文当错误信息返回（`fail('git-failed', detail)`）| 闸门提到 `/commit` 顶部、盖住两个分支，并放在「暂存区为空」之前；文案走 `conflictedMessage()`（i18n）。客户端**有冲突时直接禁用「提交」按钮**，浮层说明原因，从源头上不让人点。原则与 `/pull` 的分叉提示一致：**不要把 git 的英文 hint/fatal 原样丢给用户**。回归测试：有冲突时提交按钮 disabled 且 title 提到冲突，无冲突时恢复可用 |
 | 日期分组标题比提交文字右移 8px | 导轨的连接线**越出 gutter** 压到标题，我当时用「给标题加 `paddingLeft: 8`」来避开，而提交列没有这 8px | 把 gutter 从 18 加宽到 22，连接线收在 gutter 内（`marginLeft + width ≤ gutter/2`），标题与提交列因此共享同一文字起点。补了测试断言两处 gutter 宽度一致、线段不越界 |
 | 主按钮/选中分段变成**空白方块**（白底白字） | 用 `--dsw-alias-brand-primary` 当**填充**色。它其实是品牌**前景**色（浅色近黑、深色近白），名字有误导性 | 改用 `--dsw-alias-button-info-fill`（蓝色填充）配 `--dsw-alias-label-primary-foreground`（配对文字色）；测试同时断言「必须用前者」与「不得用后者」 |
 | 分支胶囊要**等几秒**才出现 | 切会话时第一次 `/status` 常常赶在宿主把会话载入之前（此时如实返回 `session-unknown`，实测响应 <1ms），而下一次轮询要等一个完整的 6 秒周期 | 未拿到权威答复期间改为 **500ms 快重试**（连续 12 次后回常规节奏，不做无限快轮询）。同时 `session-unknown` 归类为「未就绪」而非「无仓库」：不显示弱化胶囊、面板也不弹红条 |
@@ -352,8 +457,8 @@ if(why!=="OK 有仓库")console.log(why.padEnd(16),c)}}catch{}}}' | sort | uniq 
 ```sh
 node --check lib/index.js
 node --check lib/client.js
-node tests/host-smoke.mjs     # 40 项：porcelain v2 解析、配置、鉴权拒绝面、包含关系回退、log/show 解析、路由装配、LLM 消息契约与终止分片
-node tests/client-smoke.mjs   # 49 项：注册点与 disposer + 注册冲突重试 + 胶囊状态机 + clamp + 日期分组 + 渲染层检查
+node tests/host-smoke.mjs     # 47 项：porcelain v2 解析、冲突闸门（conflictPaths / isUnmergedPath / conflictShape / conflictDiffNote）、配置、鉴权拒绝面、包含关系回退、log/show 解析、路由装配（含新增的两条批量路由）、LLM 消息契约与终止分片
+node tests/client-smoke.mjs   # 57 项：注册点与 disposer + 注册冲突重试 + 胶囊状态机 + clamp + 日期分组 + 组头批量按钮与冲突态（含「冲突行只有 !」「详情区不给暂存按钮」「有冲突时禁用提交」）+ 渲染层检查（空工作区 / 有文件 / 有冲突三种树）+ zh/en 字典键对齐
 npm test                      # 两个都跑
 ```
 
