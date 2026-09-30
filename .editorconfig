@@ -11,3 +11,8 @@ indent_size = 4
 [*.{yml,yaml,json,md}]
 indent_style = space
 indent_size = 2
+
+# cmd.exe 逐字节读批处理文件：LF 行尾在含标签（:label）或括号块（if/for）的文件上会解析出错。
+# 这是全仓库唯一的行尾例外，.gitattributes 里对同一组扩展名做了相同声明。
+[*.{cmd,bat}]
+end_of_line = crlf

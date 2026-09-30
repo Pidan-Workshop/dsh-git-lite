@@ -11,6 +11,145 @@
 - **不做分支管理面板**：只提供本地分支切换，不做新建 / 删除 / 重命名 / rebase。
 - **不做交互式 rebase / 冲突解决**：冲突只给明确提示，让用户回终端处理。
 
+## 目标运行时：0.2.0-rc.2，Web 与桌面同一套组合
+
+升级到 **DSH `0.2.0-rc.2`** 时先查清了一件事：**桌面版与 Web 版不是两套插件运行时**。
+`~/.dsh/profiles/desktop/package.json` 与 `profiles/web` 的 `dsh.profile.bundles` 完全一致
+（`@deepseek-ai/dsh-base` + `@deepseek-ai/dsh-web-app`），桌面只是多了 `dsh-desktop-host`
+（Electron 外壳 + 原生 picker / Office→PDF / koffi），UI 仍由同一个 `dsh-host-webserver`
+在 `http://127.0.0.1:<port>` 上提供，`dsh-client-modules` 与
+`dsh-client-ui-sidebar-right` 也在同一位置。所以**同一份客户端代码两边都能跑**。
+
+真正的差别在**安装通道**，不在 API：
+
+- **`desktop` profile 由桌面应用独占管理。** `dsh/lib/bin.js` 里的
+  `rejectElectronProfile()` 会让普通 `dsh` 直接拒绝：
+  `error: profile "desktop" is managed exclusively by the Electron application`。
+  只有桌面自带载体（`resources/runtime/cli/bin/dsh.cmd`，它以
+  `manageDesktopProfile: true` 启动 CLI）能管它，并且对 `package.json` 上文件锁。
+- **profile 之间互不相通。** 装进 `web` 的插件不会出现在桌面版里 —— 这是「插件不兼容」
+  最容易被误判成 API 问题的一类症状。
+- 桌面 CLI **自带 pnpm**（`resources/runtime/pnpm`），所以走它安装时本机 PATH 上不需要 pnpm。
+
+据此，`install.ps1` / `install.sh` **不自己拼 profile 的加载器条目**，而是把活交给官方 CLI：
+一个 bundle 要同时登记 profile 的 `dependencies`、`dsh.profile.bundles` 与
+`cordis.patch.yml` 三处，官方实现才是权威。
+
+版本闸门也一并用上了：`dsh` 的 `evaluatePluginCompatibility()` 只检查
+`@deepseek-ai/dsh` 与 `@deepseek-ai/dsh-*` 的 peer（`@deepseek-ai/cordis` 不在其列），
+在**安装时与每次启动时**都会校验。所以 `package.json` 声明了
+`@deepseek-ai/dsh-client-ui-sidebar-right: ^0.2.0-rc.2`，并把该 peer 标为 `optional`
+（标记只影响 pnpm 的 unmet-peer 提示，闸门照查），让运行时版本不匹配时**明确拒绝加载**，
+而不是让插件半死不活。
+
+## 0.2.0 客户端半区的两处破坏性变更
+
+**宿主半区（`lib/index.js`）零改动**：`webServer.register({kind, path, handler})`、
+`sessions.get()` + `session.header.cwd`、`workspaceRegistry.list()/resolveByPath()` +
+`workspace.path`、`llm.stream()`、`agentDefaultModel.currentSelection()` 在 0.2.0 全部原样保留。
+
+也确认**不必**换架构：0.2.0 新增了 Cordis Package（`cordis_define`，受限 ctx 的动态 client
+半区），但官方所有客户端插件仍走 Loader-entry + `dsh.client` bundle 这条路，
+`window.__ModuleLoader__.load({id, factory})`、`dsh.client.platform: 'web'`、
+`dsh.bundle.patch`、以及三个席位（`sidebar.right.pane.tab` / `.title` /
+`conversation.session.header.utilities`）的键名与 kind 都没变。
+
+### 一、会话身份：`sessions.list.current` → 席位标准套件
+
+`sessions.list` **还在**（由 `dsh-api-session-controller` 公开提供），但它的 state 只剩
+`{ ids, byId, phase, projectionsBySession }` —— **`current` 被移除了**（见该包
+`projectList()` 的 `this.list.set({...})`）。0.2.0 改成由**席位标准套件**下发身份：
+`dsh-cordis-client-runner` 的 slot catalog 里，我们三个席位的 `standardProps` 都包含
+`sessionId: SessionId` 与 `useSessions: UseSessions`。
+
+```js
+// 旧（0.1.5）：永远拿到 undefined
+var snap = useSyncExternalStore(sessions.list.subscribe, sessions.list.getSnapshot)
+var id = snap.current                       // ← 字段没了
+// 新（0.2.0）：官方 ui-open-in-app 的同一写法
+var sessionId = props.sessionId
+var cwd = props.useSessions((s) => s.byId[sessionId]?.cwd)
+```
+
+**这条 bug 的可怕之处在于它不报错。** 旧代码不抛异常，只是 `sessionId` 恒为 `undefined`，
+于是面板发出的每个请求都缺 `sessionId`，宿主一律回 `bad-request: sessionId is required`；
+表现出来是「面板一直加载不出东西」，很容易被误判成宿主的问题。
+`tests/client-smoke.mjs` 里因此加了一条**回归闸门**：源码中再次出现 `sessions.list` /
+`sessions.binding` / `.prompt(` 即失败。
+
+`useSeatSession()` 里还有一个刻意的细节：`props.useSessions` 缺席时用一个**模块级稳定的**
+no-op hook 顶上，而不是写 `if (props.useSessions) useSessions(...)` —— 后者会让 hook 数量
+随 props 变化，违反 hooks 规则。缺 cwd 只是「这次上报不了兜底值」，宿主仍用自己的权威
+`session.header.cwd`，所以降级是安全的。
+
+### 二、发消息给当前会话：`ISession.prompt()` → 按 scope 寻址的 conversation
+
+「交给 Agent 提交」与「Agent 解决冲突」原来调
+`sessions.binding(id).session.prompt([{type:'text',text}], 'queue')`。0.2.0 里这两条都有问题：
+
+1. `ISession.prompt()` 现在返回 **`RemoteResult`** 而不是 reject
+   （`promise<RemoteResult<{accepted:true}>>`）。旧代码 `.then(() => ok(t.delegated)).catch(report)`
+   会把宿主的**拒绝当成成功**，弹一条假的「已交给 Agent」。
+2. `sessions.binding(id)` 按契约只借**已保留**的 generation（"undefined without a retained
+   generation"），从 UI 回调里取并不稳妥。
+
+0.2.0 的规范入口是**按会话 scope 寻址**的 conversation 服务
+（官方 `dsh-client-ui-conversation` 自己的 queue dock 就这么取）：
+
+```js
+var actx = ctx.sessions.scope(sessionId)          // AgentContext；未保留时 undefined
+var conversation = actx && actx.get('conversation')
+conversation.send(text)                           // 失败会 reject，不用自己判 RemoteResult
+```
+
+从 root ctx 直接 `ctx.get('conversation')` 会抛
+`conversation.send requires a session scope — address one via ctx.sessions.scope(id).conversation`，
+所以 `scope(sessionId)` 这步不能省。换过来之后 `RemoteResult` 与"是否仍被 retain"两个坑一起没了。
+
+## 插件页里的标题与描述：`locale/<语言>.json`
+
+「设置 → 插件」页显示的是**本地化**的标题与描述，机制不在 `package.json` 里，而是
+`locale/` 目录下按语言命名的 JSON。读取方是 `dsh-app-boot` 的 `readPluginMeta()`
+（`lib/index.js:1970`）：
+
+```js
+const englishPath = optionalResourcePath(`${specifier}/locale/en.json`, parentURL)
+const dictionaries = englishPath === undefined ? new Map() : dictionariesOf(englishPath, …)
+const title       = localizedText('title',       dictionaries, manifest.name,        specifier)
+const description = localizedText('description', dictionaries, manifest.description, '')
+```
+
+`dictionariesOf()` 扫 `en.json` **同目录**下的 `*.json`，**文件名即语言 id**；每个文件读成
+`{ meta: { title, description } }`。`localizedText()` 产出
+`{ en: <package.json 的兜底>, ...<各语言的 meta 字段> }` —— 注意展开写在 `en` 之后，
+所以 `en.json` 里的值会覆盖那个兜底。
+
+客户端只认 `meta`，不吃 `package.json.description`
+（`dsh-client-ui-plugin-manager/lib/client.js:600`）：
+
+```js
+title:       pkg.meta?.title       === undefined ? pkg.name : resolveText(pkg.meta.title)
+description: pkg.meta?.description === undefined ? undefined  : resolveText(pkg.meta.description)
+```
+
+**三个坑都是静默的，表现只是「插件页显示裸包名 `dsh-git-lite` 且没有描述」：**
+
+| 坑 | 后果 |
+|---|---|
+| 没有 `locale/en.json` | 整条本地化路径直接跳过。英文不是「兜底」而是「没有」——但 `title` 至少会退到包名 |
+| `exports` 没放行 `"./locale/*.json"` | `require.resolve` 抛 `ERR_PACKAGE_PATH_NOT_EXPORTED`，被 `missingResource()` 当成「文件不存在」，同样静默跳过 |
+| `files` 没带 `"locale/*.json"` | 本地开发正常（junction 直读），**npm 装回来就没有** —— 只有发布后才暴露 |
+
+另外两个细节：字段值必须是**非空字符串**（`textOf()` 对空白串抛错，错误会被折成
+`meta.error` 诊断，同样不显眼）；图标另有出处，是 `package.json` 的 `icon` 指向的
+清单相对图片文件（SVG/PNG/JPEG/WebP，≤256 KiB）。
+
+`tests/host-smoke.mjs` 的「打包契约：locale/<语言>.json 的语言映射」用例把上面每一条
+都钉住了，包括「en/zh 标题不能相同」这种「粘了一份英文过来」的假本地化。
+
+> 顺带排除一个诱饵：官方包里随处可见的 `README.i18n.yaml` **不是**这个机制。它是官方
+> docs 的中英段落哈希配对记录（给 `pnpm run verify-translation-pairing` 用），与插件描述无关。
+
 ## 安全模型
 
 本插件把安全放在结构里，而不是放在字符串过滤里：
@@ -444,11 +583,10 @@ if(why!=="OK 有仓库")console.log(why.padEnd(16),c)}}catch{}}}' | sort | uniq 
 
 | 改了 | 生效方式 |
 |---|---|
-| `lib/index.js`（宿主半区） | **必须重启 `dsh web`** —— 宿主半区在进程启动时加载 |
-| `lib/client.js`（浏览器半区） | 本机实测**有 HMR watch 生效**：`install.sh` 写入文件即触发 `rebuilt()`，插件在页面里原地重载（依据：一次页面会话里出现过两个不同的 `rev`）。最稳妥仍是**完整刷新页面** |
+| `lib/index.js`（宿主半区） | **必须重启应用**（`dsh web` 或 DeepSeek Harness）—— 宿主半区在进程启动时加载 |
+| `lib/client.js`（浏览器半区） | 本机实测**有 HMR watch 生效**：写入文件即触发 `rebuilt()`，插件在页面里原地重载（依据：一次页面会话里出现过两个不同的 `rev`）。最稳妥仍是**完整刷新页面** |
 
-**完整刷新页面**还有个额外好处：它会清掉任何一代遗留的注册（比如上面那条「已注册」的
-历史遗留），从干净状态重新来一遍。
+> 用 `link:` 安装时改代码才走这条路；用 `file:`/npm 装的是副本，得重装。
 
 ## 测试
 
@@ -457,10 +595,28 @@ if(why!=="OK 有仓库")console.log(why.padEnd(16),c)}}catch{}}}' | sort | uniq 
 ```sh
 node --check lib/index.js
 node --check lib/client.js
-node tests/host-smoke.mjs     # 47 项：porcelain v2 解析、冲突闸门（conflictPaths / isUnmergedPath / conflictShape / conflictDiffNote）、配置、鉴权拒绝面、包含关系回退、log/show 解析、路由装配（含新增的两条批量路由）、LLM 消息契约与终止分片
-node tests/client-smoke.mjs   # 57 项：注册点与 disposer + 注册冲突重试 + 胶囊状态机 + clamp + 日期分组 + 组头批量按钮与冲突态（含「冲突行只有 !」「详情区不给暂存按钮」「有冲突时禁用提交」）+ 渲染层检查（空工作区 / 有文件 / 有冲突三种树）+ zh/en 字典键对齐
+node tests/host-smoke.mjs     # 49 项：porcelain v2 解析、冲突闸门（conflictPaths / isUnmergedPath / conflictShape / conflictDiffNote）、配置、鉴权拒绝面、包含关系回退、log/show 解析、路由装配（含新增的两条批量路由）、LLM 消息契约与终止分片、打包契约（dsh.bundle.patch / dsh.client / files / peer 闸门 与 cordis.patch.yml 自洽、locale 语言映射）
+node tests/client-smoke.mjs   # 62 项：注册点与 disposer + 注册冲突重试 + 0.2.0 契约闸门（不得回退 sessions.list / .prompt）+ 委派路径真点击（conversation.send）+ 胶囊状态机 + clamp + 日期分组 + 组头批量按钮与冲突态 + 渲染层检查（空工作区 / 有文件 / 有冲突三种树）+ zh/en 字典键对齐
 npm test                      # 两个都跑
 ```
 
 两个冒烟测试都不需要 DSH 运行时：host 侧只验证纯函数与插件装配形状，client 侧用 `vm`
-模拟 `window.__ModuleLoader__` 与 React。
+模拟 `window.__ModuleLoader__` 与 React。但 host 冒烟会**真的 spawn 本机 git**
+（`resolveRepo` 的仓库解析用例），所以需要一个能正常建子进程的环境。
+
+**跨平台注意**：仓库按 `.editorconfig` 存 LF，Windows 上 `core.autocrlf=true` 会检成 CRLF。
+早先有两条用例因此**假红**：client 的字典边界用例硬编码 `\n` 模式；host 用 POSIX 的 `/tmp`
+当"存在但不是仓库"的样本（Windows 上它不存在，错误码从 `workspace-unknown` 变成
+`no-workspace`）。现在前者读源码时归一化行尾，后者改用 `os.tmpdir()`。
+
+### 新增回归用例（0.2.0 迁移）
+
+| 用例 | 钉住的回归 |
+|---|---|
+| `0.2.0 契约：不再引用被移除的 sessions.list.current / sessions.binding` | 任何人把会话身份改回 `sessions.list` |
+| `0.2.0 契约：会话身份与 cwd 都取自席位标准套件` | `props.sessionId` / `props.useSessions` / `scope(sessionId)` / `get('conversation')` 四处契约，以及两条委派路径都要在通道不可用时报错 |
+| `交给 Agent 提交：按会话 scope 投递一条消息` | 真点击 → `conversation.send` 被调到，且带对了会话 id 与文案 |
+| `冲突委派：同样走 conversation.send` | 同上，且文案必须含「不要提交」 |
+| `会话通道不可用时立刻报错，而不是假装成功` | 没有 conversation 时不抛、也不误报成功 |
+| `打包契约：dsh.bundle.patch / dsh.client / exports 与 cordis.patch.yml 自洽` | 清单写错导致插件**静默不加载**（症状与「装错 profile」「没重启」一模一样，最难查）；顺带钉住 peer 里必须有一个 `@deepseek-ai/dsh*`，否则兼容性闸门形同虚设 |
+

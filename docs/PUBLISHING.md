@@ -6,19 +6,26 @@
 ## 发布前检查（可在无登录状态下完成）
 
 ```sh
-npm test                 # host 40 项 + client 49 项
+npm test                 # host 49 项 + client 62 项
 npm pack --dry-run       # 看 tarball 里到底有哪些文件
 ```
 
-`npm pack --dry-run` 的预期内容（6 个文件）：
+`npm pack --dry-run` 的预期内容（**8 个文件**）：
 
 ```
 LICENSE.md  README.md  cordis.patch.yml  package.json
 lib/client.js  lib/index.js
+locale/en.json  locale/zh.json
 ```
 
-`tests/`、`docs/`、`install.sh`、`uninstall.sh`、`.gitignore` **不进包**，这是有意的：
-测试与维护者文档只服务于仓库开发，两个脚本只服务于源码安装路径。
+`locale/*.json` 是「设置 → 插件」页里标题与描述的本地化词典（机制见
+[DESIGN](https://github.com/Pidan-Workshop/dsh-git-lite/blob/main/docs/DESIGN.md)）。
+**别把它们从 `files` 里删掉** —— 本地开发用 `link:` 直读仓库，漏了也看不出问题，
+只有 npm 装回来才会发现插件页退化成裸包名 `dsh-git-lite` 且没有描述。
+
+`tests/`、`docs/`、`install.sh`、`install.ps1`、`install.cmd`、`uninstall.*`、`.gitignore`
+**不进包**，这是有意的：测试与维护者文档只服务于仓库开发，那几个脚本只服务于源码安装路径
+（npm 安装路径由 `dsh plugin add dsh-git-lite` 自己完成，不需要脚本）。
 README 里指向 `docs/DESIGN.md` 的链接用的是**绝对 GitHub 地址**，所以在 npm 页面上照样能点。
 
 > **本机注意**：`~/.npm` 在工作区之外，DSH 沙箱会拦掉对它的写入，报成
@@ -70,8 +77,8 @@ npm publish               # prepublishOnly 会先自动跑 npm test
 ### 5. 打 tag 并推送
 
 ```sh
-git tag -a v0.1.0 -m 'dsh-git-lite v0.1.0'
-git push origin v0.1.0
+git tag -a v0.2.0 -m 'dsh-git-lite v0.2.0 — DSH 0.2.0-rc.2（Web + 桌面）'
+git push origin v0.2.0
 ```
 
 ### 6. 发布后验证
@@ -81,11 +88,16 @@ npm view dsh-git-lite version dist.tarball
 npm view dsh-git-lite readme | head -20     # 确认 README 渲染正常、无坏链接
 ```
 
-装回来验证一遍（需要 pnpm；若本机仍没有 pnpm，见下方「已知缺口」）：
+装回来验证一遍。桌面版用桌面自带的 CLI（它自带 pnpm，本机不需要另装）：
 
-```sh
-dsh plugin --profile web add dsh-git-lite
+```powershell
+# 完全退出 DeepSeek Harness 之后
+.\uninstall.cmd                    # 先把 link: 装的卸掉，避免与 npm 版并存
+.\install.cmd -Spec dsh-git-lite   # 从 npm 装
+# 重启应用，确认 Git 标签页与分支胶囊都在
 ```
+
+Web 版：`dsh plugin --profile web add dsh-git-lite`。
 
 ## 版本号怎么走
 
@@ -93,9 +105,13 @@ dsh plugin --profile web add dsh-git-lite
 
 | 改动 | 版本 |
 |---|---|
-| 修 bug、改文案、内部重构 | `0.1.1` |
-| 新增功能 / 新增配置项 | `0.2.0` |
-| 配置项语义变更、行为不兼容 | `0.3.0`（`0.x` 里 breaking 也升 minor） |
+| 修 bug、改文案、内部重构 | `0.2.1` |
+| 新增功能 / 新增配置项 | `0.3.0` |
+| 配置项语义变更、行为不兼容 | `0.4.0`（`0.x` 里 breaking 也升 minor） |
+
+**与 DSH 目标版本解耦**：本包版本号跟自己的改动走，不跟 dsh 的版本号对齐。
+"支持哪个 dsh"由 `peerDependencies` 的 `@deepseek-ai/dsh-client-ui-sidebar-right` 范围表达
+（当前 `^0.2.0-rc.2`），dsh 会在安装与启动时校验它。升 dsh 目标版本时改这个范围。
 
 ```sh
 npm version patch   # 或 minor / major；会顺手打一个 git commit + tag
@@ -103,15 +119,17 @@ npm version patch   # 或 minor / major；会顺手打一个 git commit + tag
 
 ## 出错了怎么办
 
-- **发错版本**：优先用 `npm deprecate dsh-git-lite@0.1.0 "说明"` 标记，而不是撤销。
+- **发错版本**：优先用 `npm deprecate dsh-git-lite@0.2.0 "说明"` 标记，而不是撤销。
   按 npm 现行规则，`npm unpublish` 有 72 小时窗口、且该版本号**不能再次发布**，
   名字占用与下载统计都不可逆。
 - **包内容不对**：改完重新 `npm version patch` 再发，不要试图覆盖已发布的版本号。
 
 ## 已知缺口
 
-- **本机没有 pnpm**（`which pnpm` 为空），所以 `dsh plugin --profile web add ...`
-  这条路径无法在本机验证；发版后的「装回来」那一步要么先 `npm i -g pnpm`，
-  要么换一台有 pnpm 的机器。源码安装路径（`bash install.sh`）不受影响。
+- **本机没有独立的 `dsh`**（PATH 上没有，也没有全局安装），所以
+  `dsh plugin --profile web add ...` 这条 **Web** 路径无法在本机验证 —— 桌面版路径可以，
+  因为桌面自带 `resources/runtime/cli/bin/dsh.cmd` 且它自带 pnpm。
+  要验 Web 路径，先 `npm i -g @deepseek-ai/dsh@0.2.0-rc.2`（**必须是同一个 0.2.0-rc.2**，
+  否则 web profile 会按另一个 anchor 解析 bundle，行为与桌面版不一致）。
 - `docs/PUBLISHING.md` 本身不在 `package.json` 的 `files` 里，因此不会随包发布 ——
   它是给维护者看的，放仓库就够。

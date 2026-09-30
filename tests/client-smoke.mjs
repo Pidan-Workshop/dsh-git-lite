@@ -14,13 +14,24 @@ function check(label, fn) {
 	console.log(`  ✓ ${label}`)
 }
 
+/** 需要 await 的用例（例如点击后等微任务跑完再断言副作用）。 */
+async function acheck(label, fn) {
+	await fn()
+	passed += 1
+	console.log(`  ✓ ${label}`)
+}
+
 // 注意：vm 沙箱里产生的对象/数组，其原型与本 realm 不同，
 // assert.deepStrictEqual 会比较原型而失败。凡是比较沙箱返回值，
 // 一律先归一化（Array.from / 逐字段断言）。
 console.log('dsh-git-lite client smoke')
 
 // ── 在受控沙箱里执行 lib/client.js ─────────────────────────────
-const src = readFileSync(new URL('../lib/client.js', import.meta.url), 'utf8')
+// 统一成 LF 再分析：仓库里按 .editorconfig 存的是 LF，但 Windows 上
+// core.autocrlf=true 会把它检成 CRLF，而下面几条**源码结构**断言用的是
+// 含 `\n` 的精确模式（例如字典边界 `\n\t\t\t}`）。不归一化的话，
+// 这些用例在 CRLF 检出上会无谓失败。执行语义不受影响。
+const src = readFileSync(new URL('../lib/client.js', import.meta.url), 'utf8').replace(/\r\n/g, '\n')
 
 // 定时器：client.js 只用 setTimeout 做「注册冲突重试」与延迟关提示。
 // 这里不真跑回调，而是记下来由用例显式 flush —— 重试路径因此可确定性测试。
@@ -225,7 +236,9 @@ check('注册失败被兜住且不抛给调用方（一个失败不连累其余�
 	// 冲突错误的处理见下方「注册冲突会重试」用例。
 	const regs = []
 	const sc = {
-		sessions: { list: { subscribe: () => () => {}, getSnapshot: () => ({ current: undefined }) } },
+		// 0.2.0：插件不再读 sessions.list（它的 state 里已经没有 current）；
+		// 会话级服务改经 sessions.scope(id).get(...) 寻址。
+		sessions: { scope: () => undefined },
 		locale: { getLocale: () => ({ active: 'zh' }), subscribe: () => () => {} },
 		sidebarRight: { openTab: () => {} },
 		sidebarRightTabs: {
@@ -290,7 +303,9 @@ check('HMR 下注册冲突会重试：旧代释放后补上注册，而不是永
 	const registered = []
 	const localEffects = []
 	const sc = {
-		sessions: { list: { subscribe: () => () => {}, getSnapshot: () => ({ current: undefined }) } },
+		// 0.2.0：插件不再读 sessions.list（它的 state 里已经没有 current）；
+		// 会话级服务改经 sessions.scope(id).get(...) 寻址。
+		sessions: { scope: () => undefined },
 		locale: { getLocale: () => ({ active: 'zh' }), subscribe: () => () => {} },
 		sidebarRight: { openTab: () => {} },
 		sidebarRightTabs: {
@@ -326,6 +341,7 @@ check('HMR 下注册冲突会重试：旧代释放后补上注册，而不是永
 
 check('三处 ctx.inject 的依赖名都真实存在，且各自只声明所需服务', () => {
 	// 拆成三块是刻意的：注册互不连累，且每块依赖最小化（越早订阅 seat 声明越好）。
+	// 头部胶囊不再需要 sessions —— 会话身份由席位标准套件下发（0.2.0）。
 	assert.equal(injectedDeps.length, 3)
 	const seen = []
 	for (const deps of injectedDeps) {
@@ -337,7 +353,37 @@ check('三处 ctx.inject 的依赖名都真实存在，且各自只声明所需�
 			)
 		}
 	}
-	assert.deepEqual(seen, ['sidebarRightTabs', 'slots,sessions,locale', 'slots,sessions,locale,sidebarRight'])
+	assert.deepEqual(seen, ['sidebarRightTabs', 'slots,sessions,locale', 'slots,locale,sidebarRight'])
+})
+
+check('0.2.0 契约：不再引用被移除的 sessions.list.current / sessions.binding', () => {
+	// 回归闸门。旧代码 `sessions.list.getSnapshot().current` 在 0.2.0 永远得到
+	// undefined（该字段被移除），症状不是抛异常，而是每个请求都缺 sessionId、
+	// 宿主一律回 bad-request —— 极易被误判成宿主的问题，所以在这里钉死。
+	// 注释里出现这些词是允许的（它们在解释这段历史），所以只看代码行。
+	const codeLines = src
+		.split('\n')
+		.filter((line) => !/^\s*(\*|\/\/|\/\*)/.test(line))
+		.join('\n')
+	assert.equal(codeLines.includes('sessions.list'), false, '不得再读 sessions.list')
+	assert.equal(codeLines.includes('sessions.binding'), false, '不得再走 sessions.binding')
+	assert.equal(codeLines.includes('.prompt('), false, '不得再直接调 ISession.prompt（改走 conversation.send）')
+	assert.equal(codeLines.includes('useSession('), false, '旧的 useSession 取值方式不得回归')
+	// 注意：不能笼统地禁 `.current` —— React ref 的 bodyRef.current 是正当用法。
+})
+
+check('0.2.0 契约：会话身份与 cwd 都取自席位标准套件', () => {
+	const code = src
+	assert.ok(code.includes('props.sessionId'), '应从 props.sessionId 取会话身份')
+	assert.ok(code.includes('props.useSessions'), '应从 props.useSessions 取 cwd')
+	assert.ok(code.includes("scope(sessionId)"), '会话级服务应经 sessions.scope(sessionId) 寻址')
+	assert.ok(code.includes("get('conversation')"), '发消息应经 conversation 服务')
+	// 通道不可用时必须报出可读原因，而不是静默什么也不做；两条委派路径都要盖到。
+	assert.equal(
+		(code.match(/report\(new Error\(t\.noConversation\)\)/g) || []).length,
+		2,
+		'「交给 Agent 提交」与「Agent 解决冲突」都要在通道不可用时明确报错'
+	)
 })
 
 check('未使用任何不存在的槽位名', () => {
@@ -559,7 +605,7 @@ check('formatDayLabel 本地化且非法输入不抛', () => {
 // 逻辑测试全绿也照样漏掉，所以补一层渲染检查。
 
 /** 用会递归调用子组件的 h() 把面板渲成一棵树（可 patch 源码以切换状态）。 */
-function renderPanel(patch) {
+function renderPanel(patch, scOverrides) {
 	const source = patch === undefined ? src : patch(src)
 	let loaded = null
 	const captured = {}
@@ -589,21 +635,24 @@ function renderPanel(patch) {
 		useRef: (i) => ({ current: i }),
 		useSyncExternalStore: (_s, g) => g()
 	}
-	const sc = {
-		sessions: {
-			list: { subscribe: () => () => {}, getSnapshot: () => ({ current: 's1', byId: { s1: { cwd: '/tmp' } } }) }
-		},
-		locale: { getLocale: () => ({ active: 'zh' }), subscribe: () => () => {} },
-		sidebarRight: { openTab: () => {} },
-		sidebarRightTabs: { register: () => () => {} },
-		slots: {
-			inject: (_s, f) => f(),
-			register: (o, c) => {
-				captured[o.name] = c
-				return () => {}
+	const sc = Object.assign(
+		{
+			// 0.2.0：会话级服务经 sessions.scope(id) 寻址；默认没有 scope，
+			// 于是「交给 Agent」这条路会走「通道不可用」的分支（另有专门用例覆盖）。
+			sessions: { scope: () => undefined },
+			locale: { getLocale: () => ({ active: 'zh' }), subscribe: () => () => {} },
+			sidebarRight: { openTab: () => {} },
+			sidebarRightTabs: { register: () => () => {} },
+			slots: {
+				inject: (_s, f) => f(),
+				register: (o, c) => {
+					captured[o.name] = c
+					return () => {}
+				}
 			}
-		}
-	}
+		},
+		scOverrides
+	)
 	const m = loaded.factory((name) => {
 		if (name === 'react') return react
 		throw new Error(name)
@@ -615,7 +664,26 @@ function renderPanel(patch) {
 			f()
 		}
 	})
-	return captured['sidebar.right.pane.tab']({ sessions: sc.sessions, locale: sc.locale })
+	return captured['sidebar.right.pane.tab'](seatProps(sc))
+}
+
+/**
+ * 0.2.0 席位组件的 props：业务 share（我们 inject 的）+ 席位标准套件。
+ *
+ * 标准套件里的 `sessionId` / `useSessions` 是官方框架下发的，本插件不自己造 ——
+ * 这里按官方 ui-open-in-app 的同一形状伪造：`useSessions(sel)` 对会话目录快照取值。
+ */
+function seatProps(sc, overrides) {
+	const props = Object.assign(
+		{
+			sessions: sc.sessions,
+			locale: sc.locale,
+			sessionId: 's1',
+			useSessions: (select) => select({ ids: ['s1'], byId: { s1: { id: 's1', cwd: '/tmp/repo' } } })
+		},
+		overrides
+	)
+	return props
 }
 
 /** 收集树里所有元素节点与文本（数组作为单个子节点时要展开）。 */
@@ -718,12 +786,14 @@ check('用户自己的提交按钮排最后，且三个动作各带说明', () =
 })
 
 /** 渲染变更模式（注入一份 status），供批量按钮与冲突分组的用例复用。 */
-function renderChanges(filesJson) {
-	return renderPanel((s) =>
-		s.replace(
-			'var [status, setStatus] = React.useState(null)',
-			'var [status, setStatus] = React.useState({branch:"main",files:' + filesJson + '})'
-		)
+function renderChanges(filesJson, scOverrides) {
+	return renderPanel(
+		(s) =>
+			s.replace(
+				'var [status, setStatus] = React.useState(null)',
+				'var [status, setStatus] = React.useState({branch:"main",files:' + filesJson + '})'
+			),
+		scOverrides
 	)
 }
 
@@ -1018,6 +1088,76 @@ check('日期分组的标题与提交文字用同一个 gutter（导轨对齐）
 	for (const g of plainRows) {
 		assert.equal(hasRail(g), true, '非节点行应画竖线')
 	}
+})
+
+// ── 「交给 Agent」这条路的 0.2.0 迁移 ───────────────────────────
+// 这是本次升级改动的第二条核心路径：入口从 sessions.binding(id).session.prompt()
+// 换成按会话 scope 寻址的 conversation 服务。旧写法还有一个隐性 bug ——
+// ISession.prompt() 在 0.2.0 返回 RemoteResult 而不是 reject，所以宿主**拒绝**
+// 时旧代码会弹一条「已交给 Agent」的成功提示。
+
+/** 一个「会话 scope 里挂着 conversation 服务」的假 sessions。 */
+function sessionsWithConversation(onSend) {
+	return {
+		scope: (sessionId) => ({
+			get: (name) => (name === 'conversation' ? { send: (text) => onSend(sessionId, text) } : undefined)
+		})
+	}
+}
+
+function findButton(panel, label) {
+	return collect(panel).nodes.find(
+		(n) => n.type === 'button' && collect(n).texts.join('') === label
+	)
+}
+
+await acheck('交给 Agent 提交：按会话 scope 投递一条消息（conversation.send）', async () => {
+	const sent = []
+	const panel = renderPanel(undefined, {
+		sessions: sessionsWithConversation((sessionId, text) => {
+			sent.push({ sessionId, text })
+			return Promise.resolve()
+		})
+	})
+	const btn = findButton(panel, '交给 Agent 提交')
+	assert.ok(btn, '找不到「交给 Agent 提交」按钮')
+	btn.props.onClick()
+	await new Promise((resolve) => setImmediate(resolve))
+	assert.equal(sent.length, 1, '应恰好投递一条消息')
+	assert.equal(sent[0].sessionId, 's1', '应投递给席位所在的会话')
+	assert.ok(sent[0].text.indexOf('提交') !== -1, '投递文本应说明要提交，实际：' + sent[0].text)
+})
+
+await acheck('冲突委派：同样走 conversation.send', async () => {
+	const sent = []
+	const panel = renderChanges(WITH_CONFLICT, {
+		sessions: sessionsWithConversation((sessionId, text) => {
+			sent.push({ sessionId, text })
+			return Promise.resolve()
+		})
+	})
+	const btn = findButton(panel, 'Agent 解决冲突')
+	assert.ok(btn, '有冲突时应出现「Agent 解决冲突」')
+	btn.props.onClick()
+	await new Promise((resolve) => setImmediate(resolve))
+	assert.equal(sent.length, 1, '应恰好投递一条消息')
+	assert.ok(sent[0].text.indexOf('冲突') !== -1, '投递文本应说明是冲突，实际：' + sent[0].text)
+	assert.ok(sent[0].text.indexOf('不要提交') !== -1, '必须明确「只解决冲突、不要提交」')
+})
+
+await acheck('会话通道不可用时立刻报错，而不是假装成功', async () => {
+	let clicked = false
+	const panel = renderPanel()
+	const btn = findButton(panel, '交给 Agent 提交')
+	assert.ok(btn, '找不到「交给 Agent 提交」按钮')
+	// 默认夹具没有 sessions.scope → conversationFor 返回 null。
+	// 这条断言的是「不抛、不误解」：没有 send 可调，也绝不该报成功。
+	assert.doesNotThrow(() => {
+		btn.props.onClick()
+		clicked = true
+	})
+	assert.equal(clicked, true)
+	await new Promise((resolve) => setImmediate(resolve))
 })
 
 console.log(`\n${passed} 项通过`)

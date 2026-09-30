@@ -1,56 +1,69 @@
 #!/usr/bin/env bash
-# dsh-git-lite 安装脚本（手动路径；推荐优先用官方 CLI：
-#   dsh plugin --profile web add dsh-git-lite               # npm 发布后
-#   dsh plugin --profile web add /path/to/dsh-git-lite      # 本地目录
-#   dsh plugin --profile web add link:/path/to/dsh-git-lite # 链接方式，改完刷新页面即生效
-# ）
+# dsh-git-lite 安装脚本（Web 版 / 桌面版通用）。
+#
+# Windows 上的桌面版请改用 install.ps1 —— 它会自动发现桌面自带的 dsh.cmd：
+#   pwsh -File install.ps1                 # 装进 desktop profile
+#   pwsh -File install.ps1 -Profile web    # 装进 web profile
+#
+# 本脚本刻意**不自己拼 profile 的加载器条目**，而是转交官方 CLI。原因：一个
+# 组合包（bundle）要同时登记 profile 的 dependencies、dsh.profile.bundles 与
+# cordis.patch.yml 三处，官方实现才是权威；手搓容易半对半错，而半错的症状
+# （标签页不出现、或出现两次）很难查。
 #
 # 用法：
-#   bash install.sh                                        # 默认 profile：~/.dsh/profiles/web
-#   DSH_PROFILE_DIR=~/.dsh/profiles/dev bash install.sh    # 指定其它 profile
+#   bash install.sh                     # 默认装进 desktop profile
+#   bash install.sh web                 # 装进 web profile
+#   bash install.sh desktop /path/to/dsh-git-lite-0.2.0.tgz
+#   DSH_CLI=~/bin/dsh bash install.sh   # 指定 dsh CLI
 #
-# 装完需重启 dsh web 生效（会话有持久化，可恢复）。
+# 关于 desktop profile：它由桌面应用独占管理，普通 dsh 会被拒绝
+#   error: profile "desktop" is managed exclusively by the Electron application
+# 必须用桌面安装目录里的 CLI（<安装目录>/resources/runtime/cli/bin/dsh.cmd）。
+# 装之前请完全退出 DeepSeek Harness。
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
-PROFILE="${DSH_PROFILE_DIR:-$HOME/.dsh/profiles/web}"
+PROFILE="${1:-desktop}"
+SPEC="${2:-link:$HERE}"
 PKG_NAME="dsh-git-lite"
-PATCH_FILE="cordis.patch.yml"
-MARKER="id: git-lite"
 
-if [ ! -d "$PROFILE" ]; then
-  echo "❌ 找不到 DSH profile：${PROFILE}（可用 DSH_PROFILE_DIR 指定）"
+# CLI 发现顺序：显式 DSH_CLI → PATH 上的 dsh → 桌面安装目录（仅 Windows/Git Bash）
+CLI="${DSH_CLI:-}"
+if [ -z "$CLI" ] && command -v dsh >/dev/null 2>&1; then
+  CLI="$(command -v dsh)"
+fi
+if [ -z "$CLI" ] && [ -n "${DSH_DESKTOP_DIR:-}" ] &&
+   [ -x "${DSH_DESKTOP_DIR}/resources/runtime/cli/bin/dsh.cmd" ]; then
+  CLI="${DSH_DESKTOP_DIR}/resources/runtime/cli/bin/dsh.cmd"
+fi
+
+if [ -z "$CLI" ]; then
+  cat >&2 <<'EOF'
+❌ 找不到 dsh CLI。
+   · 桌面版：用 install.ps1（会自动发现桌面自带的 dsh.cmd），
+     或先设 DSH_DESKTOP_DIR=<桌面安装目录>。
+   · Web 版：需要 PATH 上有 dsh（npm i -g @deepseek-ai/dsh@0.2.0-rc.2）。
+   · 也可以直接给 DSH_CLI=<dsh 可执行文件路径>。
+EOF
   exit 1
 fi
 
-# 1) 包本体 → profile 的 node_modules（hoisted 布局：目录即包，放入即可被解析）
-DEST="${PROFILE}/node_modules/${PKG_NAME}"
-rm -rf "$DEST"
-mkdir -p "$DEST"
-cp -R "${HERE}/package.json" "${HERE}/lib" "${HERE}/${PATCH_FILE}" "$DEST/"
-echo "✅ 已装入包：$DEST"
-
-# 2) 加载器条目 → profile 的 cordis.patch.yml（幂等）
-TARGET="${PROFILE}/${PATCH_FILE}"
-if [ -f "$TARGET" ] && grep -q "$MARKER" "$TARGET"; then
-  echo "⏭️  ${PATCH_FILE} 已包含 ${MARKER}，跳过打补丁"
-elif [ -s "$TARGET" ]; then
-  {
-    echo
-    echo "# dsh-git-lite 加载器条目（install.sh 追加，可手动删除）"
-    echo "- insert:"
-    echo "    - id: git-lite"
-    echo "      name: dsh-git-lite"
-    echo "      inject: [webServer, sessions, workspaceRegistry]"
-    echo "      config: {}"
-  } >> "$TARGET"
-  echo "✅ 已在 ${PATCH_FILE} 追加加载器条目"
-else
-  cat "${HERE}/${PATCH_FILE}" > "$TARGET"
-  echo "✅ 已写入 ${PATCH_FILE}（样例内容）"
+if [ "$PROFILE" = "desktop" ]; then
+  PROFILE_DIR="${DSH_HOME:-$HOME/.dsh}/profiles/desktop"
+  if [ ! -f "${PROFILE_DIR}/package.json" ]; then
+    echo "❌ desktop profile 尚未初始化（${PROFILE_DIR}/package.json 不存在）。" >&2
+    echo "   请先启动一次 DeepSeek Harness，再完全退出，然后重跑本脚本。" >&2
+    exit 1
+  fi
 fi
 
+echo "CLI    ：$CLI"
+echo "profile：$PROFILE"
+echo "安装源 ：$SPEC"
 echo
-echo "完成。重启 dsh web 后生效。"
-echo "打开方式：右侧栏切换到「Git」标签页，或点会话头部右侧带分支名的胶囊。"
-echo "提示：pnpm install 会清理手工放置的包，重装依赖后请重跑本脚本。"
+
+"$CLI" plugin --profile "$PROFILE" add "$SPEC"
+
+echo
+echo "✅ 已装入。重启 DeepSeek Harness 后，在右侧栏切到「Git」标签页"
+echo "   （或点会话头部右侧带分支名的胶囊）。"

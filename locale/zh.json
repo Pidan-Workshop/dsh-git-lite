@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Git 面板",
+    "description": "右侧栏的轻量 Git 面板，直接调用你本机的 git：改动、行内 diff、抓取与拉取、两段确认推送、提交、分支与 stash。"
+  }
+}

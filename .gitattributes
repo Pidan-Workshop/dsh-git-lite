@@ -1,0 +1,13 @@
+# 行尾的显式声明，不依赖每个开发者的 core.autocrlf。
+#
+# cmd.exe 逐字节读批处理文件，LF 行尾在含标签（:label）或括号块（if/for）的文件上
+# 会解析出错，所以 .cmd/.bat 必须强制 CRLF。这是唯一的例外：仓库其余部分按
+# .editorconfig 存 LF（Windows 上 core.autocrlf=true 会在检出时转成 CRLF，
+# 但那只影响工作区，索引里仍是 LF）。
+*.cmd text eol=crlf
+*.bat text eol=crlf
+
+# 脚本/文档里的中文很多，且 .ps1 需要 UTF-8 BOM 才能被 Windows PowerShell 5.1
+# 正确解析（无 BOM 时它按 ANSI 读，中文会变乱码并破坏语法）。BOM 是内容的一部分，
+# 不要交给任何行尾/编码转换去猜。
+*.ps1 text eol=lf

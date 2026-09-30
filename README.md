@@ -1,12 +1,13 @@
 # dsh-git-lite
 
-DSH Web（DeepSeek Harness）右侧栏的轻量 Git 面板 —— **直接调用你本机的 `git`**，在侧边栏里看改动、行内 diff、拉取、推送、提交、切分支、stash，不用切到终端。
+DSH（DeepSeek Harness）右侧栏的轻量 Git 面板 —— **Web 版与桌面版通用**，**直接调用你本机的 `git`**，在侧边栏里看改动、行内 diff、拉取、推送、提交、切分支、stash，不用切到终端。
 
-A lite Git tab for the DeepSeek Harness Web sidebar, driven by your local git: changes, inline diff, pull, push, commit, branches and stash.
+A lite Git tab for the DeepSeek Harness sidebar, for both the web and desktop builds, driven by your local git: changes, inline diff, pull, push, commit, branches and stash.
 
 - 轻量：只做基础 Git 操作，不做 DAG 图、不做交互式 rebase。
 - 原生行为：调用本机 `git` 二进制，遵守你的 `~/.gitconfig`、hooks 和凭据配置，不另存 token。
 - 无依赖、无构建：纯 JS，`dependencies` 为空。
+- 面向 **DSH `0.2.0-rc.2`**；Web 与桌面是同一套 Web 组合，所以同一份代码两边都能跑（差别只在装进哪个 profile，见「安装」）。
 
 ## 功能
 
@@ -27,65 +28,104 @@ A lite Git tab for the DeepSeek Harness Web sidebar, driven by your local git: c
 
 ## 安装
 
+> **profile 是分开的。** 桌面版读 `~/.dsh/profiles/desktop`，Web 版读 `~/.dsh/profiles/web`。
+> 装到哪个 profile，插件就只出现在哪个版本里 —— 装进 `web` 却去桌面版找「Git」标签页，是找不到的。
+>
+> 桌面 profile 由桌面应用**独占管理**：用 PATH 上的普通 `dsh` 跑 `plugin --profile desktop`
+> 会被直接拒绝（`error: profile "desktop" is managed exclusively by the Electron application`）。
+> 必须用桌面安装目录里的 CLI（`<安装目录>\resources\runtime\cli\bin\dsh.cmd`）—— 下面的脚本会自动找到它。
+> 装/卸之前请**完全退出** DeepSeek Harness（含托盘图标），装完再启动。
+
 ### 前置条件
 
-- 一个带官方右侧栏多标签框架 `@deepseek-ai/dsh-client-ui-sidebar-right` 的 **DSH Web**。
-  本插件在 **DSH `0.1.5-rc.2`** 上开发与验证。
-- 本机有 `git`（面板直接调用它）。
+- **DSH `0.2.0-rc.2`**。Web 版与桌面版跑的是同一套 Web 组合，所以两边行为一致，本版本两边都验证。
+  插件依赖官方右侧栏框架 `@deepseek-ai/dsh-client-ui-sidebar-right` 的 0.2.0 契约。
+- 本机有 `git`（面板直接调用它）。**不需要 pnpm** —— 桌面自带的 CLI 内含 pnpm。
 
-### 方式 A：从 npm 安装（推荐）
+### 桌面版（Windows）
 
-```sh
-dsh plugin --profile web add dsh-git-lite
+```powershell
+# 1) 完全退出 DeepSeek Harness（含托盘图标）
+# 2) 从源码链接安装：改完代码刷新页面即生效
+.\install.cmd
+# 3) 重新启动 DeepSeek Harness
 ```
 
-> `dsh plugin` 把参数转发给 pnpm，因此需要 PATH 上有 **pnpm**；没有会报
-> `pnpm not found on PATH`，那就改用方式 B。
+`install.cmd` 只是 `install.ps1` 的薄包装。本机执行策略是 AllSigned，直接跑 `.ps1`
+会报「未对文件进行数字签名」，包装脚本用**进程级** `-ExecutionPolicy Bypass` 绕开。
+想先看它到底要执行什么，加 `-DryRun`：
 
-### 方式 B：从源码安装（不需要 pnpm）
-
-```sh
-git clone https://github.com/Pidan-Workshop/dsh-git-lite.git
-cd dsh-git-lite
-bash install.sh
+```powershell
+.\install.cmd -DryRun
+# 桌面安装：E:\Application\DeepSeek Harness  (DSH 0.2.0-rc.2)
+# CLI      ：…\resources\runtime\cli\bin\dsh.cmd
+# profile  ：desktop  (C:\Users\<你>\.dsh\profiles\desktop)
+# 安装源   ：link:E:\Game\Pidan-Workshop\dsh-git-lite
+# （DryRun）将执行：& '…\dsh.cmd' plugin --profile desktop add link:E:\…\dsh-git-lite
 ```
 
-脚本做两件事：把包拷进 `~/.dsh/profiles/web/node_modules/`，并往该 profile 的
-`cordis.patch.yml` **幂等**追加一行加载器条目（已存在则跳过，可重复执行）。
+脚本**不自己拼 profile 的加载器条目**，而是把活交给官方 CLI：一个组合包（bundle）
+要同时登记 profile 的 `dependencies`、`dsh.profile.bundles` 与 `cordis.patch.yml` 三处，
+官方实现才是权威，手搓很容易半对半错（症状是标签页不出现、或出现两次）。
 
-装到别的 profile：
+也可以完全手打（脚本做的就是这件事）：
 
-```sh
-DSH_PROFILE_DIR=~/.dsh/profiles/dev bash install.sh
+```powershell
+& "$env:ProgramFiles\DeepSeek Harness\resources\runtime\cli\bin\dsh.cmd" `
+    plugin --profile desktop add link:E:\path\to\dsh-git-lite
 ```
 
-在源码上改代码、想让改动立刻在页面里生效，用链接安装：
+### Web 版
 
 ```sh
-dsh plugin --profile web add link:/path/to/dsh-git-lite
+# 同版本的 dsh 在 PATH 上（npm i -g @deepseek-ai/dsh@0.2.0-rc.2）
+dsh plugin --profile web add dsh-git-lite                    # npm 发布后
+dsh plugin --profile web add /path/to/dsh-git-lite           # 本地目录
+dsh plugin --profile web add link:/path/to/dsh-git-lite      # 链接安装，改完刷新即生效
+```
+
+桌面自带的 CLI 同样能装 web profile（它自带 pnpm，所以本机不需要另外装）：
+
+```sh
+dsh.cmd plugin --profile web add dsh-git-lite
 ```
 
 ### 装完重启
 
-**重启 `dsh web`** 后生效。然后打开右侧栏切到 **Git** 标签页，或直接点会话头部右侧那个带分支名的胶囊。
+**重启 `dsh web` / DeepSeek Harness** 后生效。然后打开右侧栏切到 **Git** 标签页，
+或直接点会话头部右侧那个带分支名的胶囊。
 
 ### 卸载
 
-用 CLI 装的：
-
-```sh
-dsh plugin --profile web remove dsh-git-lite
+```powershell
+.\uninstall.cmd                 # 桌面版
+.\uninstall.cmd -Profile web    # Web 版
 ```
 
-用脚本装的：
+等价于 `dsh plugin --profile <profile> remove dsh-git-lite`。
+
+### 版本不兼容会被拦下
+
+`package.json` 对 `@deepseek-ai/dsh-client-ui-sidebar-right` 声明了 peer 范围
+`^0.2.0-rc.2`。dsh 在**安装时与每次启动时**都会读它，运行时版本不满足会明确拒绝，
+而不是让插件半死不活。确实要放行（自担崩溃与数据损坏风险）：
 
 ```sh
-bash uninstall.sh
+dsh plugin --profile desktop allow-version dsh-git-lite@0.2.0 --dsh-version <精确运行时版本> --accept-risk
 ```
 
-后者移除包本体与 `cordis.patch.yml` 里的加载器条目，并保留 `.bak-git-lite` 备份。
+### 从 0.1.5-rc.2 升级
 
-> ⚠️ 在 profile 里跑 `pnpm install` 会清理手工放置的包，重装依赖后请重跑 `install.sh`。
+0.2.0 的客户端半区有两处不兼容，本版本已迁移；**不支持 0.1.x**，升级前请先卸载旧版：
+
+| 旧写法（0.1.5） | 新写法（0.2.0） |
+|---|---|
+| `sessions.list.getSnapshot().current` 取会话 id | 席位标准套件下发的 `props.sessionId` |
+| `sessions.binding(id).session.prompt(...)` 发消息 | `ctx.sessions.scope(id).get('conversation').send(text)` |
+
+前者的症状值得记一笔：`sessions.list` 还在，但它的 state 里**已经没有 `current`**，
+于是旧代码拿到的永远是 `undefined`，面板发出的每个请求都缺 `sessionId`、宿主一律回
+`bad-request` —— **不抛异常**，表现为「面板一直加载不出东西」，极易被误判成宿主的问题。
 
 ## 使用
 
@@ -132,7 +172,8 @@ bash uninstall.sh
 
 ## 配置
 
-全部可选。在 profile 的 `cordis.patch.yml` 里给加载器条目加 `config`：
+全部可选。自定义 profile 的加载器条目时在 `cordis.patch.yml` 里给它加 `config`
+（桌面版是 `~/.dsh/profiles/desktop/cordis.patch.yml`，Web 版是 `.../web/...`）：
 
 ```yaml
 - insert:
@@ -147,16 +188,46 @@ bash uninstall.sh
         commitPrompt: ''         # 覆盖「交给 Agent 提交」注入的指令文本
 ```
 
+> 用 `dsh plugin add` 装的话，条目由 bundle 自身的 `cordis.patch.yml` 提供；
+> 上面这种写法是给"自己插加载器条目"的场景（例如已手工放进 `node_modules` 的包）
+> 加配置用的。
+
+### 插件页里的标题与描述
+
+「设置 → 插件」页显示的**标题与描述跟随界面语言**（中文 / English），词典在
+`locale/en.json` 与 `locale/zh.json`：
+
+```jsonc
+// locale/zh.json
+{ "meta": { "title": "Git 面板", "description": "右侧栏的轻量 Git 面板，直接调用你本机的 git：…" } }
+```
+
+要给自己的 fork 再加一门语言，就往 `locale/` 里再放一个 `<语言 id>.json`
+（例如 `ja.json`），字段同为 `meta.title` / `meta.description`。两条硬性要求：该文件必须靠
+`package.json` 的 `exports` 放行（`"./locale/*.json"`）**并且**写进 `files` ——
+否则 dsh 会**静默**退回成「显示裸包名、没有描述」，本地用 `link:` 开发时完全看不出问题。
+
 ## 常见问题
 
 **右侧栏没有「Git」标签页？**
-先确认装完**重启过 `dsh web`**，再查 profile 的 `cordis.patch.yml` 里有没有 `id: git-lite` 那一行。
+按顺序查三件事：
+
+1. **装到哪个 profile 了？** 桌面版读 `desktop`，Web 版读 `web`，两者互不相通。
+   查 `~/.dsh/profiles/<profile>/package.json` 的 `dsh.profile.bundles` 里有没有 `dsh-git-lite`。
+2. **重启过应用吗？** 装/卸都需要重启才生效。
+3. **启动被告知版本不兼容了吗？** `package.json` 的 peer 范围是 `^0.2.0-rc.2`；
+   运行时不是 0.2.x 时 dsh 会明确拒绝加载，而不是静默。按 README「版本不兼容会被拦下」处理。
 
 **胶囊一直是灰色「无仓库」？**
 说明该会话的目录确实不是 git 仓库，或不在已注册工作区里。悬停看 tooltip，具体原因有四类：
 `no-workspace`（没有工作目录或目录已不存在）、`workspace-unknown`（不在任何工作区里）、
 `not-a-repo`（目录链上没有 `.git`）、`outside-workspace`（仓库根在工作区之外）。
 这不是插件故障 —— 而是如实告诉你这里没有仓库可用。
+
+**面板一直加载不出东西，或提示 `sessionId is required`？**
+那是 0.2.0 之前「拿不到会话身份」的症状。本版本已改为从席位标准套件取
+`props.sessionId`；若你在自己的 fork 里看到它，说明回退到了读 `sessions.list.current`
+的旧写法（该字段在 0.2.0 已被移除）。`npm test` 里有一条回归闸门专门钉这个。
 
 **拉取报分叉错误？**
 默认 `pullMode: ff-only`，本地与远端各有提交时会**拒绝**而不是替你造一个合并提交。
@@ -167,7 +238,7 @@ bash uninstall.sh
 先在本机终端里对该仓库跑一次 `git push`，让凭据助手记好，再回面板操作。
 
 **改了代码什么时候要重启？**
-改了 `lib/index.js`（宿主半区）**必须重启 `dsh web`**；只改 `lib/client.js`（浏览器半区）
+改了 `lib/index.js`（宿主半区）**必须重启应用**；只改 `lib/client.js`（浏览器半区）
 刷新页面即可；两者都改就重启 + 刷新。
 
 ## 开发
@@ -177,10 +248,16 @@ bash uninstall.sh
 ```sh
 node --check lib/index.js
 node --check lib/client.js
-npm test                      # host 冒烟 47 项 + client 冒烟 57 项
+npm test                      # host 冒烟 49 项 + client 冒烟 62 项
 ```
 
-两个冒烟测试都不需要 DSH 运行时。
+两个冒烟测试都不需要 DSH 运行时，但 host 冒烟会**真的调用本机 git**（`resolveRepo`
+的仓库解析用例），所以需要一个能正常 spawn 子进程的环境。
+
+> **Windows 检出注意**：仓库里按 `.editorconfig` 存的是 LF，而 `core.autocrlf=true`
+> 会把它检成 CRLF。以前有几条用例硬编码了 `\n` 与 POSIX 的 `/tmp`，在 Windows 上会
+> **假红**；现在 client 冒烟先归一化行尾，host 冒烟用 `os.tmpdir()` 当"存在但不是仓库"
+> 的样本，两个平台都能过。
 
 设计取舍、安全模型细节、以及真机迭代踩过的坑（含每个 bug 的根因与回归测试），
 都在 **[docs/DESIGN.md](https://github.com/Pidan-Workshop/dsh-git-lite/blob/main/docs/DESIGN.md)**

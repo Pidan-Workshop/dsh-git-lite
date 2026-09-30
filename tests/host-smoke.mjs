@@ -3,7 +3,8 @@
  *   node tests/host-smoke.mjs
  */
 import assert from 'node:assert/strict'
-import { realpathSync } from 'node:fs'
+import { existsSync, readFileSync, readdirSync, realpathSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import {
@@ -292,6 +293,13 @@ check('mergeCommitFiles 空输入返回空数组', () => {
 
 // ── resolveRepo 拒绝面 ─────────────────────────────────────────
 // 鉴权是这台插件的安全核心，这里验证它确实会拒绝而不是静默放行。
+//
+// 下面用 OUTSIDE_DIR 当「**存在**、但不是 git 仓库、也不在工作区里」的样本。
+// 从前这里硬编码 /tmp —— 那个路径在 Windows 上不存在，于是 realpath 先失败，
+// 错误码从 workspace-unknown 变成 no-workspace，用例在 Windows 上假红。
+// 用真实临时目录，两个平台都是「存在但不合规」的那个样本。
+const OUTSIDE_DIR = realpathSync(tmpdir())
+
 function fakeCtx(overrides) {
 	return Object.assign(
 		{
@@ -324,7 +332,7 @@ await rejects(
 await rejects(
 	'cwd 不属于任何已注册工作区被拒',
 	fakeCtx({
-		sessions: { get: () => ({ header: { cwd: '/tmp' } }) },
+		sessions: { get: () => ({ header: { cwd: OUTSIDE_DIR } }) },
 		workspaceRegistry: { resolveByPath: async () => undefined, list: () => [] }
 	}),
 	's1',
@@ -338,18 +346,18 @@ await rejects(
 	}),
 	's1',
 	'workspace-unknown',
-	'/tmp'
+	OUTSIDE_DIR
 )
 
 // 回归：曾经读的是 session.cwd（Session 类没有这个顶层属性），导致永远是
-// no-workspace。正确来源是 session.header.cwd。这里用 /tmp（存在但不是 git 仓库）
-// 证明 header.cwd 确实被读到了 —— 它会走到 git 那一步并以 not-a-repo 失败，
-// 而不是在 cwd 检查处就断掉。
+// no-workspace。正确来源是 session.header.cwd。这里用 OUTSIDE_DIR（存在但不是
+// git 仓库）证明 header.cwd 确实被读到了 —— 它会走到 git 那一步并以 not-a-repo
+// 失败，而不是在 cwd 检查处就断掉。
 await rejects(
 	'回归：session.header.cwd 被读取（走到 git 检查而非 no-workspace）',
 	fakeCtx({
-		sessions: { get: () => ({ header: { cwd: '/tmp' } }) },
-		workspaceRegistry: { resolveByPath: async () => ({ path: '/tmp' }), list: () => [] }
+		sessions: { get: () => ({ header: { cwd: OUTSIDE_DIR } }) },
+		workspaceRegistry: { resolveByPath: async () => ({ path: OUTSIDE_DIR }), list: () => [] }
 	}),
 	's1',
 	'not-a-repo'
@@ -358,11 +366,11 @@ await rejects(
 	'header 缺 cwd 时 clientCwd 兜底生效（同样走到 git 检查）',
 	fakeCtx({
 		sessions: { get: () => ({ header: {} }) },
-		workspaceRegistry: { resolveByPath: async () => ({ path: '/tmp' }), list: () => [] }
+		workspaceRegistry: { resolveByPath: async () => ({ path: OUTSIDE_DIR }), list: () => [] }
 	}),
 	's1',
 	'not-a-repo',
-	'/tmp'
+	OUTSIDE_DIR
 )
 
 // ── 包含关系回退（集成：用本仓库自己当真实 git 仓库）──────────────
@@ -390,7 +398,7 @@ await rejects(
 	await rejects(
 		'包含关系回退不放宽边界：cwd 在工作区之外仍被拒',
 		{
-			sessions: { get: () => ({ header: { cwd: '/tmp' } }) },
+			sessions: { get: () => ({ header: { cwd: OUTSIDE_DIR } }) },
 			workspaceRegistry: {
 				resolveByPath: async () => undefined,
 				list: () => [{ path: realpathSync(fileURLToPath(new URL('..', import.meta.url))) }]
@@ -405,6 +413,95 @@ await rejects(
 check('name / inject 契约', () => {
 	assert.equal(name, 'git-lite')
 	assert.deepEqual(inject, ['webServer', 'sessions', 'workspaceRegistry'])
+})
+
+// 打包契约：这一组错误全都会让插件**静默不加载**（右侧栏干脆没有「Git」标签页），
+// 而且症状与「装错 profile」「没重启」完全一样，所以值得在这里钉死。
+// 纯文件检查，不需要 DSH 运行时，也不需要 YAML 解析器（这文件没有 dependencies）。
+check('打包契约：dsh.bundle.patch / dsh.client / exports 与 cordis.patch.yml 自洽', () => {
+	const repo = fileURLToPath(new URL('..', import.meta.url))
+	const pkg = JSON.parse(readFileSync(join(repo, 'package.json'), 'utf8'))
+
+	// 1) 组合包声明：dsh.bundle.patch 指向的 patch 必须存在
+	assert.equal(pkg.dsh.bundle.patch, './cordis.patch.yml')
+	const patchPath = join(repo, 'cordis.patch.yml')
+	assert.ok(existsSync(patchPath), 'cordis.patch.yml 不存在')
+
+	// 2) 客户端半区声明：platform 必须是 web，exports["./client"] 指向的 bundle 必须存在
+	assert.equal(pkg.dsh.client.platform, 'web', 'dsh.client.platform 必须是 web')
+	assert.equal(pkg.exports['./client'].default, './lib/client.js')
+	assert.ok(existsSync(join(repo, 'lib', 'client.js')), 'lib/client.js 不存在')
+	assert.ok(existsSync(join(repo, 'lib', 'index.js')), 'lib/index.js 不存在')
+	assert.equal(pkg.main, 'lib/index.js')
+
+	// 3) files 必须真的把上面这些东西带进 tarball，否则装上去就是缺文件
+	for (const needed of ['lib', 'cordis.patch.yml', 'README.md', 'LICENSE.md']) {
+		assert.ok(pkg.files.includes(needed), `files 缺少 ${needed}`)
+	}
+
+	// 4) patch 里的条目要与 lib/index.js 导出的 name / inject 一致 —— 不一致时
+	//    加载器会按 name 去解析包、按 inject 去等三个服务，错一个就挂不上。
+	const patch = readFileSync(patchPath, 'utf8')
+	assert.match(patch, /^\s*-\s*insert:\s*$/m, 'patch 顶层应是 insert 列表')
+	assert.match(patch, /^\s*-\s*id:\s*git-lite\s*$/m, 'patch 缺少 id: git-lite')
+	assert.match(patch, /^\s*name:\s*dsh-git-lite\s*$/m, 'patch 缺少 name: dsh-git-lite')
+	assert.match(patch, /^\s*inject:\s*\[webServer, sessions, workspaceRegistry\]\s*$/m,
+		'patch 的 inject 必须与 lib/index.js 的 inject 完全一致')
+	assert.equal(name, 'git-lite')
+	assert.deepEqual(inject, ['webServer', 'sessions', 'workspaceRegistry'])
+
+	// 5) 兼容性闸门：peer 必须声明，且要覆盖住包自己的版本线（0.2.x）
+	//    只声明 @deepseek-ai/cordis 是没用的 —— dsh 的 evaluatePluginCompatibility()
+	//    只检查 @deepseek-ai/dsh 与 @deepseek-ai/dsh-*。
+	const peers = Object.keys(pkg.peerDependencies ?? {})
+	assert.ok(
+		peers.some((p) => p === '@deepseek-ai/dsh' || p.startsWith('@deepseek-ai/dsh-')),
+		'必须声明至少一个 @deepseek-ai/dsh* 的 peer，否则兼容性闸门形同虚设'
+	)
+	assert.equal(pkg.peerDependencies['@deepseek-ai/dsh-client-ui-sidebar-right'], '^0.2.0-rc.2')
+})
+
+// 「设置 → 插件」页里的标题与描述跟随界面语言 —— 靠 `locale/<语言>.json` 提供，
+// 由 dsh-app-boot 的 readPluginMeta() 读取。这一组有三个**静默失效**的坑：
+//   · 没有 locale/en.json  → 整条本地化路径直接跳过（英文不是兜底，是"没有"）
+//   · exports 没放行 locale/*.json → ERR_PACKAGE_PATH_NOT_EXPORTED 被当成"不存在"，同样静默跳过
+//   · files 没带 locale/*.json → 本地有、npm 装回来就没有
+// 而失败的表现只是"插件页上显示裸包名 dsh-git-lite、且没有描述"，几乎不会有人报 bug。
+check('打包契约：locale/<语言>.json 的语言映射（插件页标题与描述跟随语言）', () => {
+	const repo = fileURLToPath(new URL('..', import.meta.url))
+	const pkg = JSON.parse(readFileSync(join(repo, 'package.json'), 'utf8'))
+
+	// 1) en.json 必须存在 —— 它同时是"启用本地化"的开关与英文词典
+	const enPath = join(repo, 'locale', 'en.json')
+	assert.ok(existsSync(enPath), 'locale/en.json 不存在：插件页会显示裸包名且没有描述')
+	// 2) exports 必须放行，否则 require.resolve 会抛 ERR_PACKAGE_PATH_NOT_EXPORTED
+	assert.equal(pkg.exports['./locale/*.json'], './locale/*.json', 'exports 必须放行 ./locale/*.json')
+	// 3) files 必须带上，否则不进 npm tarball
+	assert.ok(pkg.files.includes('locale/*.json'), 'files 必须包含 locale/*.json')
+
+	// 4) 每个语言文件都得是 { meta: { title, description } } 形状的非空字符串。
+	//    dsh 的 textOf() 对空串是**抛错**，而那个错会被折成 meta.error 诊断 —— 也不显眼。
+	const languages = readdirSync(join(repo, 'locale'))
+		.filter((name) => name.endsWith('.json'))
+		.map((name) => name.slice(0, -5))
+	assert.ok(languages.includes('en'), 'locale/ 下必须有 en.json')
+	assert.ok(languages.includes('zh'), 'locale/ 下必须有 zh.json')
+	assert.deepEqual(languages.slice().sort(), ['en', 'zh'], '语言文件名必须是小写语言 id')
+
+	const titles = new Map()
+	for (const language of languages) {
+		const parsed = JSON.parse(readFileSync(join(repo, 'locale', `${language}.json`), 'utf8'))
+		const meta = parsed.meta
+		assert.ok(meta && typeof meta === 'object', `${language}.json 缺 meta 对象`)
+		for (const field of ['title', 'description']) {
+			const value = meta[field]
+			assert.equal(typeof value, 'string', `${language}.json 的 meta.${field} 必须是字符串`)
+			assert.ok(value.trim() !== '', `${language}.json 的 meta.${field} 不能是空白（dsh 会抛错）`)
+		}
+		titles.set(language, meta.title)
+	}
+	// 翻译真的不同 —— 否则等于没做本地化（曾见整份文件是从英文粘过来的）
+	assert.notEqual(titles.get('en'), titles.get('zh'), 'en/zh 的标题不该相同')
 })
 
 check('apply 注册 /git-lite 前缀路由且 llm 为可选注入', () => {

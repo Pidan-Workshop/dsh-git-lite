@@ -1,7 +1,7 @@
 {
   "name": "dsh-git-lite",
-  "version": "0.1.0",
-  "description": "DSH Web 右侧栏的轻量 Git 面板，直接调用本机 git：改动、行内 diff、拉取、两阶段确认推送、提交、分支、stash。A lite Git tab for the DeepSeek Harness Web sidebar, driven by your local git.",
+  "version": "0.2.0",
+  "description": "DSH 右侧栏（Web 与桌面版）的轻量 Git 面板，直接调用本机 git：改动、行内 diff、拉取、两阶段确认推送、提交、分支、stash。A lite Git tab for the DeepSeek Harness sidebar, driven by your local git.",
   "type": "module",
   "main": "lib/index.js",
   "exports": {
@@ -12,7 +12,8 @@
       "default": "./lib/client.js"
     },
     "./cordis.patch.yml": "./cordis.patch.yml",
-    "./package.json": "./package.json"
+    "./package.json": "./package.json",
+    "./locale/*.json": "./locale/*.json"
   },
   "dsh": {
     "bundle": {
@@ -25,6 +26,7 @@
   },
   "files": [
     "lib",
+    "locale/*.json",
     "cordis.patch.yml",
     "README.md",
     "LICENSE.md"
@@ -39,11 +41,20 @@
     "client-plugin",
     "git",
     "web",
+    "desktop",
     "git-ui",
     "devtools"
   ],
   "engines": {
     "node": ">=18"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/dsh-client-ui-sidebar-right": "^0.2.0-rc.2"
+  },
+  "peerDependenciesMeta": {
+    "@deepseek-ai/dsh-client-ui-sidebar-right": {
+      "optional": true
+    }
   },
   "author": {
     "name": "Pidan Workshop",
