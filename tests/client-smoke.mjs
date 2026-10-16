@@ -1160,4 +1160,146 @@ await acheck('会话通道不可用时立刻报错，而不是假装成功', asy
 	await new Promise((resolve) => setImmediate(resolve))
 })
 
+// ── 提示行（成功 = 一行摘要；失败 = 常驻诊断块）─────────────────
+// 背景：提示行原先没有任何清除入口，一次 `git pull` 的 Fast-forward 统计会一直
+// 挂在面板上，只能关掉标签页重开才清得掉；而那一行既没有高度上限也没有 pre-wrap，
+// 多行输出被折成一整段，还把下面的提交列表挤出了可视区。
+// 约定：宿主只给结构化事实（模式、文件数、引用数），文案落在字典里 —— 所以这里
+// 拿一份最小字典直接测映射，顺便钉住「字段缺失时不得渲染出 undefined」。
+
+const { describeSummary } = mod.__internals
+
+const SUMMARY_T = {
+	pullUpToDate: '拉取：已是最新',
+	pullUpdated: '拉取：已更新',
+	pullFastForward: '拉取：快进 {files} 个文件（+{ins} -{del}）',
+	pullMerged: '拉取：合并 {files} 个文件（+{ins} -{del}）',
+	fetchUpToDate: '抓取：引用已是最新',
+	fetchUpdated: '抓取：{n} 个引用有更新',
+	stashSaved: '已储藏改动',
+	stashNothing: '没有需要储藏的改动',
+	stashPopped: '已恢复储藏',
+	pushUpToDate: '推送：远端已是最新',
+	pushDone: '已推送 {branch} → {upstream}'
+}
+
+check('describeSummary：pull 的四种模式', () => {
+	assert.equal(describeSummary(SUMMARY_T, { summary: { kind: 'pull', mode: 'up-to-date' } }), '拉取：已是最新')
+	assert.equal(
+		describeSummary(SUMMARY_T, {
+			summary: { kind: 'pull', mode: 'fast-forward', files: 17, insertions: 1089, deletions: 202 }
+		}),
+		'拉取：快进 17 个文件（+1089 -202）'
+	)
+	assert.equal(
+		describeSummary(SUMMARY_T, { summary: { kind: 'pull', mode: 'merge', files: 1, insertions: 2, deletions: 3 } }),
+		'拉取：合并 1 个文件（+2 -3）'
+	)
+	assert.equal(describeSummary(SUMMARY_T, { summary: { kind: 'pull', mode: 'updated' } }), '拉取：已更新')
+	// 统计字段缺失（宿主没算出来）时必须退回笼统文案，绝不能渲染出 "undefined 个文件"
+	assert.equal(
+		describeSummary(SUMMARY_T, { summary: { kind: 'pull', mode: 'fast-forward' } }),
+		'拉取：已更新'
+	)
+})
+
+check('describeSummary：fetch / stash / push', () => {
+	assert.equal(describeSummary(SUMMARY_T, { summary: { kind: 'fetch', changed: false, refs: 0 } }), '抓取：引用已是最新')
+	assert.equal(describeSummary(SUMMARY_T, { summary: { kind: 'fetch', changed: true, refs: 3 } }), '抓取：3 个引用有更新')
+	assert.equal(describeSummary(SUMMARY_T, { summary: { kind: 'stash', action: 'push', changed: true } }), '已储藏改动')
+	assert.equal(describeSummary(SUMMARY_T, { summary: { kind: 'stash', action: 'push', changed: false } }), '没有需要储藏的改动')
+	assert.equal(describeSummary(SUMMARY_T, { summary: { kind: 'stash', action: 'pop', changed: true } }), '已恢复储藏')
+	assert.equal(
+		describeSummary(SUMMARY_T, { summary: { kind: 'push', upToDate: false }, branch: 'main', upstream: 'origin/main' }),
+		'已推送 main → origin/main'
+	)
+	assert.equal(describeSummary(SUMMARY_T, { summary: { kind: 'push', upToDate: true } }), '推送：远端已是最新')
+	// 认不出来（或宿主没给摘要）一律 null，由调用方回退到原始输出
+	assert.equal(describeSummary(SUMMARY_T, {}), null)
+	assert.equal(describeSummary(SUMMARY_T, { summary: null }), null)
+	assert.equal(describeSummary(SUMMARY_T, { summary: { kind: 'nope' } }), null)
+})
+
+/** 注入一条提示行状态（成功 / 失败），供提示行渲染用例复用。 */
+function renderTip(kind, stateJson) {
+	const anchor = kind === 'error'
+		? 'var [error, setError] = React.useState(null)'
+		: 'var [notice, setNotice] = React.useState(null)'
+	return renderPanel((s) => s.replace(anchor, anchor.replace('React.useState(null)', 'React.useState(' + stateJson + ')')))
+}
+
+check('成功提示：单行摘要 + 可关闭 + 完整原文挂在 title 上', () => {
+	const raw = 'Updating 1e2e283..c68e5e3\\nFast-forward\\n 17 files changed, 1089 insertions(+), 202 deletions(-)'
+	const panel = renderTip('notice', "{text:'拉取：快进 17 个文件（+1089 -202）',detail:'" + raw + "'}")
+	const { nodes } = collect(panel)
+	const bar = nodes.find((n) => n.props && n.props['data-git-lite-tip'] === 'notice')
+	assert.ok(bar, '找不到成功提示行')
+	assert.equal(bar.props.style.whiteSpace, 'nowrap', '成功提示必须单行')
+	assert.equal(bar.props.style.overflow, 'hidden')
+	assert.equal(bar.props.style.maxHeight, undefined, '成功提示不该有高度上限（它只有一行）')
+	// 正文只有摘要：原始输出不得渲染成正文（否则又变成挤占版面的多行日志）
+	const texts = collect(bar).texts.join('')
+	assert.equal(texts.indexOf('Fast-forward'), -1, '原始输出只应出现在 title 上，不应进正文')
+	assert.equal(texts.indexOf('\n'), -1, '成功提示的正文不得含换行')
+	// 完整原文（含换行）挂在 title 上，需要时悬停可见
+	const textNode = collect(bar).nodes.find((n) => n.props && String(n.props.title || '').indexOf('Fast-forward') !== -1)
+	assert.ok(textNode, '完整原文应挂在 title 上')
+	// 必须有手动关闭入口 —— 这正是当初「清不掉」的那条 bug
+	const dismiss = collect(bar).nodes.find(
+		(n) => n.type === 'button' && n.props['data-git-lite-dismiss'] === 'notice'
+	)
+	assert.ok(dismiss, '成功提示必须有 × 关闭入口')
+	assert.equal(typeof dismiss.props.onClick, 'function')
+	assert.ok(dismiss.props.title, '× 需要 title 说明')
+})
+
+check('失败提示：常驻诊断块 —— pre-wrap + 高度上限 + 滚动 + ×', () => {
+	const panel = renderTip(
+		'error',
+		"'git push 被拒绝:\\n ! [rejected] main -> main (fetch first)\\nhint: Updates were rejected'"
+	)
+	const { nodes } = collect(panel)
+	const bar = nodes.find((n) => n.props && n.props['data-git-lite-tip'] === 'error')
+	assert.ok(bar, '找不到失败提示行')
+	assert.equal(bar.props.style.whiteSpace, 'pre-wrap', '多行原文必须保留换行（原先被折成一整段）')
+	assert.equal(bar.props.style.overflow, 'auto', '超高要能滚动')
+	assert.ok(Number(bar.props.style.maxHeight) > 0, '必须有高度上限，否则会把下面的列表挤没')
+	const dismiss = collect(bar).nodes.find(
+		(n) => n.type === 'button' && n.props['data-git-lite-dismiss'] === 'error'
+	)
+	assert.ok(dismiss, '失败提示也必须有 × 关闭入口')
+	assert.equal(typeof dismiss.props.onClick, 'function')
+})
+
+check('× 真的清状态；只有成功提示挂自动消失，失败提示不自动溜走', () => {
+	// 渲染层的 useState 是桩、点不动，这两条只能用源码结构钉住行为。
+	assert.match(src, /onDismiss: function \(\) \{\s*setError\(null\)/, '失败提示的 × 要清掉 error')
+	assert.match(src, /onDismiss: function \(\) \{\s*setNotice\(null\)/, '成功提示的 × 要清掉 notice')
+	assert.ok(
+		/setTimeout\(function \(\) \{[\s\S]{0,60}?setNotice\(null\)/.test(src),
+		'成功提示必须挂一个自动消失定时器'
+	)
+	assert.ok(/NOTICE_MS = \d+/.test(src), '自动消失的时长应来自具名常量')
+	// 失败提示绝不能自动消失：push 被拒、pull 冲突这类原文正是最需要读完并复制走的
+	assert.ok(
+		!/setTimeout\(function \(\) \{[\s\S]{0,200}?setError\(null\)/.test(src),
+		'失败提示不得自动消失'
+	)
+})
+
+check('换会话时清空提示行（日志说的是上一个仓库的操作）', () => {
+	assert.match(
+		src,
+		/setBranches\(null\)[\s\S]{0,240}?setNotice\(null\)\s*\n\s*setError\(null\)/,
+		'换会话必须清掉通知与错误'
+	)
+})
+
+check('push 成功不再把弹层按钮文案「确认推送」当成状态提示', () => {
+	// 回归：原先写的是 `ok(value.output || t.pushConfirm)` —— 输出为空时
+	// 会在成功提示行里显示「确认推送」，一句和结果无关的弹层按钮文案。
+	assert.equal(src.indexOf('ok(value.output || t.pushConfirm)'), -1)
+	assert.match(src, /ok\(describeSummary\(t, value\) \|\| value\.output, value\.output\)/)
+})
+
 console.log(`\n${passed} 项通过`)

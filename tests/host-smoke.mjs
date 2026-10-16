@@ -13,14 +13,20 @@ import {
 	conflictPaths,
 	conflictShape,
 	conflictDiffNote,
+	fetchSummary,
 	inject,
 	isUnmergedPath,
 	mergeCommitFiles,
 	name,
 	normalizeConfig,
+	numstatTotals,
 	parseLog,
+	parseRefSnapshot,
 	parseStatus,
+	pullSummary,
+	pushSummary,
 	resolveRepo,
+	stashSummary,
 	streamToText
 } from '../lib/index.js'
 
@@ -682,6 +688,108 @@ await acheck('streamToText 把 finish 的 aborted 抛出，缺字段时有兜底
 			return true
 		}
 	)
+})
+
+// ── 命令结果摘要（提示行只占一行）───────────────────────────────
+// 背景：提示行原先直接显示 git 原文，一次 pull 的 Fast-forward 统计会把面板挤没，
+// 而且没有任何清除入口。改法是把原文降级成 title，正文只留一行摘要；摘要的事实
+// 来源全部是管道命令（rev-parse / merge-base / diff --numstat / for-each-ref），
+// 因为 git 的人话会按 LANG 被翻译 —— 拿英文正则去匹配，装了 git-lang 的机器上
+// 会静默失效（摘要悄悄变错/变空，最难查的那种坏法）。
+
+check('numstatTotals：普通行的文件数与行数', () => {
+	const totals = numstatTotals('5\t0\t.editorconfig\n13\t0\t.gitattributes\n113\t36\tREADME.md\n')
+	assert.deepEqual(totals, { files: 3, insertions: 131, deletions: 36 })
+})
+
+check('numstatTotals：二进制记 `-`，算文件但不计行数', () => {
+	assert.deepEqual(numstatTotals('-\t-\timg.bin\n'), { files: 1, insertions: 0, deletions: 0 })
+})
+
+check('numstatTotals：重命名多一个路径字段，仍只算一个文件、只取前两列', () => {
+	assert.deepEqual(numstatTotals('0\t0\told.txt\tnew.txt\n'), { files: 1, insertions: 0, deletions: 0 })
+})
+
+check('numstatTotals：空输入与非 numstat 行都不算数', () => {
+	assert.deepEqual(numstatTotals(''), { files: 0, insertions: 0, deletions: 0 })
+	assert.deepEqual(numstatTotals('not a numstat line\n'), { files: 0, insertions: 0, deletions: 0 })
+})
+
+check('parseRefSnapshot：refname 与 sha 之间是制表符', () => {
+	const refs = parseRefSnapshot(
+		'refs/remotes/origin/HEAD\tc68e5e3aaa\nrefs/remotes/origin/main\tc68e5e3aaa\n\n'
+	)
+	assert.equal(refs.size, 2)
+	assert.equal(refs.get('refs/remotes/origin/main'), 'c68e5e3aaa')
+})
+
+check('fetchSummary：改了 / 新增 / 删除都算一次引用更新', () => {
+	const before = parseRefSnapshot('refs/remotes/origin/main\taaa\nrefs/remotes/origin/gone\tbbb\n')
+	const same = parseRefSnapshot('refs/remotes/origin/main\taaa\nrefs/remotes/origin/gone\tbbb\n')
+	assert.deepEqual(fetchSummary(before, same), { kind: 'fetch', changed: false, refs: 0 })
+	const after = parseRefSnapshot('refs/remotes/origin/main\tccc\nrefs/remotes/origin/new\tddd\n')
+	assert.deepEqual(fetchSummary(before, after), { kind: 'fetch', changed: true, refs: 3 })
+})
+
+check('pullSummary：前后 HEAD 相同就是「已是最新」', () => {
+	assert.deepEqual(pullSummary({ before: 'aaa', after: 'aaa', fastForward: false, stats: null }), {
+		kind: 'pull',
+		mode: 'up-to-date'
+	})
+})
+
+check('pullSummary：快进带上 numstat 的改动量', () => {
+	assert.deepEqual(
+		pullSummary({
+			before: 'aaa',
+			after: 'bbb',
+			fastForward: true,
+			stats: { files: 17, insertions: 1089, deletions: 202 }
+		}),
+		{ kind: 'pull', mode: 'fast-forward', files: 17, insertions: 1089, deletions: 202 }
+	)
+})
+
+check('pullSummary：before 不是 after 的祖先 ⇒ 合并', () => {
+	assert.deepEqual(
+		pullSummary({
+			before: 'aaa',
+			after: 'bbb',
+			fastForward: false,
+			stats: { files: 1, insertions: 2, deletions: 3 }
+		}),
+		{ kind: 'pull', mode: 'merge', files: 1, insertions: 2, deletions: 3 }
+	)
+})
+
+check('pullSummary：未出生的 HEAD（首次拉取）只给笼统的「已更新」', () => {
+	assert.deepEqual(pullSummary({ before: null, after: 'bbb', fastForward: true, stats: null }), {
+		kind: 'pull',
+		mode: 'updated'
+	})
+})
+
+check('pullSummary：拿不到 after 时不给摘要（交给客户端回退原文）', () => {
+	assert.equal(pullSummary({ before: 'aaa', after: null, fastForward: false, stats: null }), null)
+})
+
+check('stashSummary / pushSummary：靠 refs/stash 与上游 sha 判变化', () => {
+	assert.deepEqual(stashSummary('push', null, 'aaa'), { kind: 'stash', action: 'push', changed: true })
+	// `No local changes to save` 时 refs/stash 原地不动
+	assert.deepEqual(stashSummary('push', 'aaa', 'aaa'), { kind: 'stash', action: 'push', changed: false })
+	assert.deepEqual(stashSummary('pop', 'aaa', null), { kind: 'stash', action: 'pop', changed: true })
+	assert.deepEqual(pushSummary('aaa', 'bbb'), { kind: 'push', upToDate: false })
+	assert.deepEqual(pushSummary('aaa', 'aaa'), { kind: 'push', upToDate: true })
+	// 上游引用之前不存在（首次推送）：不能算「远端已是最新」
+	assert.deepEqual(pushSummary(null, 'aaa'), { kind: 'push', upToDate: false })
+})
+
+check('pull 摘要取自管道命令，而不是解析 git 文案', () => {
+	// 正面断言：一旦有人把模式判定/改动量换回「在输出里找 Fast-forward / files changed」，
+	// 这两条就会红。git 的那几句会按 LANG 被翻译，正则匹配在本地化机器上静默失效。
+	const src = readFileSync(new URL('../lib/index.js', import.meta.url), 'utf8')
+	assert.ok(src.indexOf("'merge-base', '--is-ancestor'") !== -1, 'pull 的模式判定应走 merge-base')
+	assert.ok(src.indexOf("'diff', '--numstat'") !== -1, 'pull 的改动量应走 diff --numstat')
 })
 
 console.log(`\n${passed} 项通过`)
