@@ -3,7 +3,16 @@
  *   node tests/host-smoke.mjs
  */
 import assert from 'node:assert/strict'
-import { existsSync, readFileSync, readdirSync, realpathSync } from 'node:fs'
+import { execFileSync } from 'node:child_process'
+import {
+	existsSync,
+	mkdirSync,
+	mkdtempSync,
+	readFileSync,
+	readdirSync,
+	realpathSync,
+	rmSync
+} from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -13,6 +22,8 @@ import {
 	conflictPaths,
 	conflictShape,
 	conflictDiffNote,
+	compareRelation,
+	fetchCoverage,
 	fetchSummary,
 	inject,
 	isUnmergedPath,
@@ -20,12 +31,15 @@ import {
 	name,
 	normalizeConfig,
 	numstatTotals,
+	parseBranches,
+	parseLeftRightCount,
 	parseLog,
 	parseRefSnapshot,
 	parseStatus,
 	pullSummary,
 	pushSummary,
 	resolveRepo,
+	splitRemoteRef,
 	stashSummary,
 	streamToText
 } from '../lib/index.js'
@@ -607,11 +621,142 @@ await acheck('新增的批量路由已装配（假 sessionId 得到 session-unkn
 		return { status: statuses[0], body: JSON.parse(bodies[0]) }
 	}
 
-	for (const path of ['/git-lite/stage-all', '/git-lite/unstage-all']) {
+	for (const path of ['/git-lite/stage-all', '/git-lite/unstage-all', '/git-lite/compare']) {
 		const r = await post(path)
 		assert.notEqual(r.status, 404, path + ' 未被装配（404）')
 		assert.equal(r.body.ok, false, path)
 		assert.equal(r.body.error.code, 'session-unknown', path + ' 应落到鉴权闸门')
+	}
+})
+
+// 真实 git 集成：远端分组、上游对比、远端检出。纯函数用例不经过 argv，
+// 这里用临时仓库验证宿主确实把这三个路由接起来了。
+await acheck('集成：/branches 远端分组 + /compare 分叉 + 远端检出（真实 git）', async () => {
+	const root = mkdtempSync(join(tmpdir(), 'dsh-git-lite-'))
+	try {
+		const bare = join(root, 'remote.git')
+		const work = join(root, 'work')
+		const other = join(root, 'other')
+		mkdirSync(work)
+		mkdirSync(other)
+		const git = (cwd, ...args) =>
+			execFileSync('git', args, { cwd, stdio: ['ignore', 'pipe', 'pipe'] }).toString().trim()
+		const init = (cwd) => {
+			git(cwd, 'init', '-q')
+			git(cwd, 'config', 'user.email', 'a@b.c')
+			git(cwd, 'config', 'user.name', 't')
+		}
+
+		git(root, 'init', '-q', '--bare', bare)
+		init(work)
+		git(work, 'remote', 'add', 'origin', bare)
+		git(work, 'checkout', '-qb', 'main')
+		git(work, 'commit', '-qm', 'c1 shared', '--allow-empty')
+		git(work, 'push', '-qu', 'origin', 'main')
+		git(work, 'checkout', '-qb', 'feature')
+		git(work, 'commit', '-qm', 'c2 feature', '--allow-empty')
+		git(work, 'push', '-qu', 'origin', 'feature')
+		git(work, 'checkout', '-q', 'main')
+		// 本地独有提交 → ahead
+		git(work, 'commit', '-qm', 'c3 local only', '--allow-empty')
+		// 另一个 clone 推一条远端独有提交 → behind，合起来就是 diverged
+		git(root, 'clone', '-q', bare, other)
+		init(other)
+		git(other, 'checkout', '-q', 'main')
+		git(other, 'commit', '-qm', 'c4 remote only', '--allow-empty')
+		git(other, 'push', '-q', 'origin', 'main')
+		git(work, 'fetch', '-q', 'origin')
+		// 远端分支 release，本地没有同名分支 → 检出时必须走 switch -c --track
+		git(work, 'push', '-q', 'origin', 'refs/remotes/origin/main:refs/heads/release')
+		git(work, 'fetch', '-q', 'origin')
+
+		const registered = []
+		const ctx = {
+			sessions: { get: () => ({ header: { cwd: work } }) },
+			workspaceRegistry: {
+				resolveByPath: async () => ({ path: work }),
+				list: () => [{ path: work }]
+			},
+			webServer: {
+				register: (opts) => {
+					registered.push(opts)
+					return () => {}
+				}
+			},
+			inject: () => () => {},
+			effect: (fn) => fn()
+		}
+		apply(ctx, {})
+		const handler = registered[0].handler
+
+		async function post(path, body) {
+			const listeners = {}
+			const chunks = []
+			let status = 0
+			const req = {
+				method: 'POST',
+				url: path,
+				on: (ev, cb) => {
+					listeners[ev] = cb
+					return req
+				},
+				destroy: () => {}
+			}
+			const done = handler(req, {
+				writeHead: (s) => {
+					status = s
+				},
+				end: (b) => chunks.push(b)
+			})
+			listeners.data(Buffer.from(JSON.stringify({ sessionId: 's1', ...body })))
+			listeners.end()
+			await done
+			return { status: status, body: JSON.parse(chunks.join('')) }
+		}
+
+		const branches = await post('/git-lite/branches', {})
+		assert.equal(branches.status, 200)
+		const b = branches.body.value
+		assert.ok(b.local.some((x) => x.name === 'main' && x.current === true))
+		const release = b.remote.find((x) => x.refname === 'refs/remotes/origin/release')
+		assert.ok(release, '远端 release 应出现在 remote 列表')
+		assert.equal(release.remote, 'origin')
+		assert.equal(release.branch, 'release')
+		assert.deepEqual(b.remotes, [{ name: 'origin', coverage: 'all' }])
+
+		const compared = await post('/git-lite/compare', {})
+		assert.equal(compared.status, 200)
+		const c = compared.body.value
+		assert.equal(c.relation, 'diverged')
+		assert.equal(c.target.ref, 'refs/remotes/origin/main')
+		assert.equal(c.ahead.count, 1)
+		assert.equal(c.behind.count, 1)
+		assert.equal(c.behind.commits[0].subject, 'c4 remote only')
+
+		// 同名本地分支若跟踪的是别的远端，不能静默切过去 —— 必须拒绝。
+		git(work, 'switch', '-qc', 'release', '--track', 'origin/main')
+		git(work, 'switch', '-q', 'main')
+		const refused = await post('/git-lite/checkout', {
+			kind: 'remote',
+			refname: 'refs/remotes/origin/release'
+		})
+		assert.equal(refused.body.ok, false)
+		assert.equal(refused.body.error.code, 'branch-exists')
+
+		git(work, 'branch', '-D', 'release')
+		const checkout = await post('/git-lite/checkout', {
+			kind: 'remote',
+			refname: 'refs/remotes/origin/release'
+		})
+		assert.equal(checkout.body.ok, true)
+		assert.equal(checkout.body.value.branch, 'release')
+		assert.equal(checkout.body.value.created, true)
+
+		const status = await post('/git-lite/status', {})
+		assert.equal(status.body.value.branch, 'release')
+		assert.equal(status.body.value.upstream, 'origin/release')
+	} finally {
+		rmSync(root, { recursive: true, force: true })
 	}
 })
 
@@ -729,6 +874,60 @@ check('fetchSummary：改了 / 新增 / 删除都算一次引用更新', () => {
 	assert.deepEqual(fetchSummary(before, same), { kind: 'fetch', changed: false, refs: 0 })
 	const after = parseRefSnapshot('refs/remotes/origin/main\tccc\nrefs/remotes/origin/new\tddd\n')
 	assert.deepEqual(fetchSummary(before, after), { kind: 'fetch', changed: true, refs: 3 })
+})
+
+check('fetchCoverage：完整 / 单分支 / 带排除的 refspec', () => {
+	assert.equal(fetchCoverage(['+refs/heads/*:refs/remotes/origin/*']), 'all')
+	assert.equal(fetchCoverage(['+refs/heads/main:refs/remotes/origin/main']), 'limited')
+	assert.equal(fetchCoverage([]), 'limited')
+	assert.equal(
+		fetchCoverage(['+refs/heads/*:refs/remotes/origin/*', '^refs/heads/secret']),
+		'partial'
+	)
+})
+
+check('splitRemoteRef：remote 名字本身含斜杠时按最长前缀拆分', () => {
+	assert.deepEqual(splitRemoteRef('refs/remotes/origin/feature/x', ['origin']), {
+		remote: 'origin',
+		branch: 'feature/x'
+	})
+	// 两个 remote：foo 与 foo/bar。最长前缀必须赢，否则会把 branch 拆成 bar/feature。
+	assert.deepEqual(splitRemoteRef('refs/remotes/foo/bar/feature', ['foo', 'foo/bar']), {
+		remote: 'foo/bar',
+		branch: 'feature'
+	})
+	assert.equal(splitRemoteRef('refs/heads/main', ['origin']), null)
+})
+
+check('parseBranches：本地 upstream / 远端分组 / 跳过符号 HEAD', () => {
+	const local = [
+		'refs/heads/main\tmain\torigin/main\t*',
+		'refs/heads/feature\tfeature\t\t'
+	].join('\n')
+	const remote = [
+		'refs/remotes/origin/HEAD\torigin/HEAD\trefs/remotes/origin/main',
+		'refs/remotes/origin/main\torigin/main\t',
+		'refs/remotes/origin/feature\torigin/feature\t'
+	].join('\n')
+	const parsed = parseBranches(local, remote, ['origin'])
+	assert.deepEqual(parsed.local, [
+		{ name: 'feature', refname: 'refs/heads/feature', upstream: null, current: false },
+		{ name: 'main', refname: 'refs/heads/main', upstream: 'origin/main', current: true }
+	])
+	assert.deepEqual(parsed.remote, [
+		{ name: 'origin/feature', refname: 'refs/remotes/origin/feature', remote: 'origin', branch: 'feature' },
+		{ name: 'origin/main', refname: 'refs/remotes/origin/main', remote: 'origin', branch: 'main' }
+	])
+})
+
+check('parseLeftRightCount / compareRelation：ahead、behind、分叉与无共同祖先', () => {
+	assert.deepEqual(parseLeftRightCount('2\t3\n'), { ahead: 2, behind: 3 })
+	assert.deepEqual(parseLeftRightCount('0 0'), { ahead: 0, behind: 0 })
+	assert.equal(compareRelation(0, 0, 'abc'), 'in-sync')
+	assert.equal(compareRelation(2, 0, 'abc'), 'ahead')
+	assert.equal(compareRelation(0, 3, 'abc'), 'behind')
+	assert.equal(compareRelation(2, 3, 'abc'), 'diverged')
+	assert.equal(compareRelation(2, 3, null), 'unrelated')
 })
 
 check('pullSummary：前后 HEAD 相同就是「已是最新」', () => {

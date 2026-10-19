@@ -8,8 +8,32 @@
 面板的用途是**基础 Git 操作**，不是完整 Git 客户端。据此有几条明确的「不做」：
 
 - **不做提交 DAG 泳道图**：完整 DAG 渲染是另一个量级的工程量，与本插件「基础功能」的定位不符。
-- **不做分支管理面板**：只提供本地分支切换，不做新建 / 删除 / 重命名 / rebase。
+- **不做分支管理面板**：远端分支只读展示 + 检出为本地跟踪分支；不做新建（除检出）/ 删除 / 重命名 / rebase。
 - **不做交互式 rebase / 冲突解决**：冲突只给明确提示，让用户回终端处理。
+
+## 远端分支与上游差异
+
+历史视图从「只走 HEAD」扩成「HEAD + 上游对比」，但不引入 DAG：
+
+- `/branches` 返回本地 / 远端分组，远端项带 `refname` / `remote` / `branch`。远端
+  `HEAD` 用 `%(symref)` 识别并跳过，不能用名字后缀判断。
+- `/branches` 同时返回每个 remote 的 `coverage`（`all` / `partial` / `limited`）。
+  单分支克隆的 `remote.<name>.fetch` 只有一条具体分支，`git fetch --all` 也不会
+  抓其他分支 —— 面板必须把这件事说出来，而不是把空远端分组当成「远端没有分支」。
+- 远端分支的 option value 带 `remote:` 前缀、传完整 `refname`：本地分支可以叫
+  `origin/feature`，裸分支名会撞 value。
+- 检出远端分支时：本地无同名分支 → `git switch -c <branch> --track <refname>`；
+  已有同名分支且 upstream 一致 → 直接切；upstream 不一致 → 拒绝（不静默切到
+  另一个分支）。
+- `/compare` 是独立的只读路由，默认比较 `@{upstream}`；没有 upstream 时，若存在
+  同名远端分支就**临时对比**它（只读，不改 upstream）。它返回 `relation`、
+  `mergeBase`、`ahead.count/shas`、`behind.count/commits`，其中 `ahead.shas`
+  只用于给当前页提交打「未推送」标记，上限 200；`behind` 默认 50 条。
+- 历史列表把「远端独有」提交放在最前，作为**独立区块**，不按日期混进本地时间线：
+  两条线混排会伪造线性历史，merge 提交和分页都会变得没有稳定锚点。
+- 刷新链路是这次的关键：`fetch` / `pull` / `push` / `checkout` / `commit` 之后
+  必须重载 log + compare；`status.head` 变化也自动 bump 历史 nonce（外部 rebase
+  也能跟上）。只刷新 status 会出现「ahead/behind 变了但历史还是旧的」。
 
 ## 目标运行时：0.2.0-rc.2，Web 与桌面同一套组合
 
@@ -640,8 +664,8 @@ if(why!=="OK 有仓库")console.log(why.padEnd(16),c)}}catch{}}}' | sort | uniq 
 ```sh
 node --check lib/index.js
 node --check lib/client.js
-node tests/host-smoke.mjs     # 49 项：porcelain v2 解析、冲突闸门（conflictPaths / isUnmergedPath / conflictShape / conflictDiffNote）、配置、鉴权拒绝面、包含关系回退、log/show 解析、路由装配（含新增的两条批量路由）、LLM 消息契约与终止分片、打包契约（dsh.bundle.patch / dsh.client / files / peer 闸门 与 cordis.patch.yml 自洽、locale 语言映射）
-node tests/client-smoke.mjs   # 62 项：注册点与 disposer + 注册冲突重试 + 0.2.0 契约闸门（不得回退 sessions.list / .prompt）+ 委派路径真点击（conversation.send）+ 胶囊状态机 + clamp + 日期分组 + 组头批量按钮与冲突态 + 渲染层检查（空工作区 / 有文件 / 有冲突三种树）+ zh/en 字典键对齐
+node tests/host-smoke.mjs     # 67 项：porcelain v2 解析、冲突闸门、分支/远端 ref 解析、fetch coverage、compare 计数与关系、鉴权拒绝面、包含关系回退、log/show 解析、路由装配（含 /compare）、LLM 消息契约与终止分片、打包契约（dsh.bundle.patch / dsh.client / files / peer 闸门 与 cordis.patch.yml 自洽、locale 语言映射）
+node tests/client-smoke.mjs   # 78 项：注册点与 disposer + 注册冲突重试 + 0.2.0 契约闸门 + 委派路径真点击 + 胶囊状态机 + clamp + 日期分组 + 组头批量按钮与冲突态 + 分支分组/远端检出 + 上游对比/远端独有区 + 刷新链路 + 渲染层检查 + zh/en 字典键对齐
 npm test                      # 两个都跑
 ```
 

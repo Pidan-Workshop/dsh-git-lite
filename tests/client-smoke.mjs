@@ -605,20 +605,23 @@ check('formatDayLabel 本地化且非法输入不抛', () => {
 // 逻辑测试全绿也照样漏掉，所以补一层渲染检查。
 
 /** 用会递归调用子组件的 h() 把面板渲成一棵树（可 patch 源码以切换状态）。 */
-function renderPanel(patch, scOverrides) {
+function renderPanel(patch, scOverrides, boxOverrides) {
 	const source = patch === undefined ? src : patch(src)
 	let loaded = null
 	const captured = {}
-	const box = {
-		window: { __ModuleLoader__: { load: (d) => { loaded = d } }, localStorage: null },
-		navigator: { language: 'zh-CN' },
-		console: { log: () => {}, warn: () => {}, error: () => {} },
-		setInterval: () => 0,
-		clearInterval: () => {},
-		setTimeout: () => 0,
-		clearTimeout: () => {},
-		fetch: () => Promise.resolve({ json: () => Promise.resolve({ ok: true, value: { branch: 'main', files: [] } }) })
-	}
+	const box = Object.assign(
+		{
+			window: { __ModuleLoader__: { load: (d) => { loaded = d } }, localStorage: null },
+			navigator: { language: 'zh-CN' },
+			console: { log: () => {}, warn: () => {}, error: () => {} },
+			setInterval: () => 0,
+			clearInterval: () => {},
+			setTimeout: () => 0,
+			clearTimeout: () => {},
+			fetch: () => Promise.resolve({ json: () => Promise.resolve({ ok: true, value: { branch: 'main', files: [] } }) })
+		},
+		boxOverrides
+	)
 	box.globalThis = box
 	vm.createContext(box)
 	vm.runInContext(source, box)
@@ -1011,6 +1014,169 @@ function renderHistory() {
 	)
 }
 
+// ── 分支分组 / 远端检出 / 上游对比 ─────────────────────────────
+const BRANCHES_FIXTURE =
+	"{local:[{name:'main',refname:'refs/heads/main',upstream:'origin/main',current:true},{name:'feature',refname:'refs/heads/feature',upstream:null,current:false}],remote:[{name:'origin/feature',refname:'refs/remotes/origin/feature',remote:'origin',branch:'feature'}],remotes:[{name:'origin',coverage:'all'}]}"
+
+function renderBranches(branchesJson, boxOverrides) {
+	return renderPanel(
+		(s) =>
+			s
+				.replace(
+					'var [status, setStatus] = React.useState(null)',
+					'var [status, setStatus] = React.useState({branch:"main",head:"a1",ahead:0,behind:0,files:[]})'
+				)
+				.replace(
+					'var [branches, setBranches] = React.useState(null)',
+					'var [branches, setBranches] = React.useState(' + branchesJson + ')'
+				),
+		undefined,
+		boxOverrides
+	)
+}
+
+check('分支下拉分本地 / 远端两组，value 带前缀避免同名冲突', () => {
+	const { nodes } = collect(renderBranches(BRANCHES_FIXTURE))
+	const select = nodes.find((n) => n.props && n.props['data-git-lite-branch-select'] === '')
+	assert.ok(select, '找不到分支下拉')
+	assert.equal(select.props.value, 'local:main', '当前分支的 value 应带 local: 前缀')
+
+	const options = nodes.filter((n) => n.type === 'option')
+	const values = options.map((o) => o.props.value)
+	assert.ok(values.indexOf('local:main') !== -1, '缺少本地 main')
+	assert.ok(values.indexOf('local:feature') !== -1, '缺少本地 feature')
+	assert.ok(
+		values.indexOf('remote:refs/remotes/origin/feature') !== -1,
+		'远端 option 必须传完整 refname，实际：' + values.join(',')
+	)
+	const groups = nodes.filter((n) => n.type === 'optgroup').map((g) => g.props.label)
+	assert.deepEqual(groups, ['本地', '远端 · origin'])
+})
+
+check('单分支克隆的 remote 会在下拉里明确提示，而不是显示成空分组', () => {
+	const limited =
+		"{local:[{name:'main',refname:'refs/heads/main',upstream:'origin/main',current:true}],remote:[],remotes:[{name:'origin',coverage:'limited'}]}"
+	const { texts } = collect(renderBranches(limited))
+	assert.ok(
+		texts.indexOf('该 remote 只跟踪部分分支（可能是单分支克隆）') !== -1,
+		'缺少单分支克隆提示：' + texts.join('|')
+	)
+})
+
+await acheck('选远端分支会调用 checkout kind=remote（而不是本地 switch）', async () => {
+	const requests = []
+	const panel = renderBranches(BRANCHES_FIXTURE, {
+		fetch: (url, opts) => {
+			requests.push({ url, body: opts && opts.body ? JSON.parse(opts.body) : null })
+			if (url.indexOf('/git-lite/checkout') !== -1) {
+				return Promise.resolve({
+					json: () =>
+						Promise.resolve({
+							ok: true,
+							value: { branch: 'feature', tracking: 'refs/remotes/origin/feature' }
+						})
+				})
+			}
+			return Promise.resolve({
+				json: () => Promise.resolve({ ok: true, value: { branch: 'main', files: [] } })
+			})
+		}
+	})
+	const select = collect(panel).nodes.find(
+		(n) => n.props && n.props['data-git-lite-branch-select'] === ''
+	)
+	assert.ok(select, '找不到分支下拉')
+	select.props.onChange({ target: { value: 'remote:refs/remotes/origin/feature' } })
+	await new Promise((resolve) => setImmediate(resolve))
+	await new Promise((resolve) => setImmediate(resolve))
+
+	const checkout = requests.find((r) => r.url.indexOf('/git-lite/checkout') !== -1)
+	assert.ok(checkout, '没有发出 /checkout 请求')
+	assert.equal(checkout.body.kind, 'remote')
+	assert.equal(checkout.body.refname, 'refs/remotes/origin/feature')
+})
+
+const COMPARE_FIXTURE =
+	"{base:{label:'main',sha:'a1'},target:{label:'origin/main',ref:'refs/remotes/origin/main',sha:'b2'},targetKind:'upstream',relation:'diverged',mergeBase:'m123456',ahead:{count:1,shas:['a1']},behind:{count:2,commits:[{sha:'r1',short:'r1',subject:'remote one',author:'me',date:'2026-09-12T12:00:00Z',refs:['origin/main']}],hasMore:false}}"
+
+function renderHistoryWithCompare(compareJson) {
+	return renderPanel((s) =>
+		s
+			.replace("React.useState('changes')", "React.useState('log')")
+			.replace(
+				'var [logState, setLogState] = React.useState(null)',
+				'var [logState, setLogState] = React.useState(' + LOG_FIXTURE + ')'
+			)
+			.replace(
+				'var [compare, setCompare] = React.useState(null)',
+				'var [compare, setCompare] = React.useState(' + compareJson + ')'
+			)
+	)
+}
+
+check('历史顶部显示上游对比，并单独列出远端独有提交', () => {
+	const { nodes, texts } = collect(renderHistoryWithCompare(COMPARE_FIXTURE))
+	const bar = nodes.find((n) => n.props && n.props['data-git-lite-compare'] === 'diverged')
+	assert.ok(bar, '找不到对比条')
+	const barText = collect(bar).texts.join('')
+	assert.ok(barText.indexOf('main ↔ origin/main') !== -1, '对比条应显示 base ↔ target')
+	assert.ok(barText.indexOf('已分叉') !== -1, 'diverged 应显示分叉关系')
+	assert.ok(barText.indexOf('分叉于 m123456') !== -1, '应显示 merge base')
+
+	const remoteSection = nodes.find((n) => n.props && n.props['data-git-lite-remote-section'] === '')
+	assert.ok(remoteSection, '找不到远端独有区')
+	const remoteText = collect(remoteSection).texts.join('')
+	assert.ok(remoteText.indexOf('远端独有') !== -1, '区头应说明是远端独有')
+	assert.ok(remoteText.indexOf('remote one') !== -1, '应列出远端独有提交')
+
+	const remoteRow = nodes.find((n) => n.props && n.props['data-git-lite-commit-side'] === 'remote')
+	assert.ok(remoteRow, '远端独有提交应有 side=remote 标记')
+	assert.ok(collect(remoteRow).texts.indexOf('远端') !== -1, '远端提交应带「远端」徽标')
+
+	const aheadRow = nodes.find((n) => n.props && n.props['data-git-lite-commit-side'] === 'ahead')
+	assert.ok(aheadRow, 'ahead 提交应有 side=ahead 标记')
+	assert.ok(collect(aheadRow).texts.indexOf('未推送') !== -1, 'ahead 提交应带「未推送」徽标')
+})
+
+check('对比区 / 远端独有区的样式里没有 undefined', () => {
+	const { nodes } = collect(renderHistoryWithCompare(COMPARE_FIXTURE))
+	const bad = []
+	for (const n of nodes) {
+		const style = n.props && n.props.style
+		if (!style) continue
+		for (const k of Object.keys(style)) {
+			const v = style[k]
+			if (v === undefined || (typeof v === 'string' && v.indexOf('undefined') !== -1)) {
+				bad.push(k + '=' + String(v))
+			}
+		}
+	}
+	assert.equal(bad.length, 0, '对比区出现 undefined 样式：' + bad.slice(0, 5).join(', '))
+})
+
+check('没有远端独有提交时不渲染空区（保持列表干净）', () => {
+	const inSync =
+		"{base:{label:'main',sha:'a1'},target:{label:'origin/main',ref:'refs/remotes/origin/main',sha:'a1'},targetKind:'upstream',relation:'in-sync',mergeBase:'a1',ahead:{count:0,shas:[]},behind:{count:0,commits:[],hasMore:false}}"
+	const { nodes, texts } = collect(renderHistoryWithCompare(inSync))
+	assert.ok(nodes.some((n) => n.props && n.props['data-git-lite-compare'] === 'in-sync'), '应有对比条')
+	assert.equal(
+		nodes.filter((n) => n.props && n.props['data-git-lite-remote-section'] === '').length,
+		0,
+		'behind=0 时不应渲染远端独有区'
+	)
+	assert.equal(texts.filter((x) => x === '远端独有').length, 0)
+})
+
+check('刷新链路：fetch / checkout / push 之后历史会重载，而不是只刷新 status', () => {
+	// 真机症状：抓取后 ahead/behind 变了，但历史还是旧的；切分支后列表还是旧分支。
+	assert.match(src, /function afterHistoryMutation\(\)[\s\S]{0,220}?bumpLog\(\)[\s\S]{0,120}?loadBranches\(true(?:, true)?\)/)
+	assert.match(src, /function onFetch\(\)[\s\S]{0,1500}?afterHistoryMutation\(\)/)
+	assert.match(src, /function onPull\(\)[\s\S]{0,400}?afterHistoryMutation\(\)/)
+	assert.match(src, /function onCheckout\(branch\)[\s\S]{0,500}?afterHistoryMutation\(\)/)
+	assert.match(src, /function onPushConfirm\(\)[\s\S]{0,700}?afterHistoryMutation\(\)/)
+	assert.match(src, /lastHead\.current !== head[\s\S]{0,120}?setLogNonce/)
+})
+
 check('日期分组标题不加下边框（否则会横穿导轨）', () => {
 	// 标题行若带整宽下边框，会在每个分组边界与导轨形成"十"字交叉，看起来像梯子
 	const { nodes } = collect(renderHistory())
@@ -1300,6 +1466,66 @@ check('push 成功不再把弹层按钮文案「确认推送」当成状态提�
 	// 会在成功提示行里显示「确认推送」，一句和结果无关的弹层按钮文案。
 	assert.equal(src.indexOf('ok(value.output || t.pushConfirm)'), -1)
 	assert.match(src, /ok\(describeSummary\(t, value\) \|\| value\.output, value\.output\)/)
+})
+
+const { parseBranchOption, compareRelationText } = mod.__internals
+
+check('parseBranchOption：本地 / 远端前缀与非法值', () => {
+	// 沙箱对象的原型与本 realm 不同，逐字段断言而不是 deepStrictEqual。
+	const local = parseBranchOption('local:main')
+	assert.equal(local.kind, 'local')
+	assert.equal(local.name, 'main')
+	const remote = parseBranchOption('remote:refs/remotes/origin/feature')
+	assert.equal(remote.kind, 'remote')
+	assert.equal(remote.refname, 'refs/remotes/origin/feature')
+	assert.equal(parseBranchOption('origin/main'), null, '没有前缀的裸分支名不再被接受')
+	assert.equal(parseBranchOption('local:'), null)
+	assert.equal(parseBranchOption(''), null)
+	assert.equal(parseBranchOption(null), null)
+})
+
+check('compareRelationText：in-sync / ahead / behind / diverged / 无上游', () => {
+	const t = {
+		compareInSync: '与 {target} 同步',
+		compareAhead: '领先 {target} ↑{n}',
+		compareBehind: '落后 {target} ↓{n}',
+		compareDiverged: '与 {target} 已分叉 ↑{ahead} ↓{behind}',
+		compareUnrelated: '与 {target} 无共同祖先',
+		compareNoUpstream: '未设置上游',
+		compareDetached: '游离 HEAD，无法对比上游',
+		compareUnborn: '尚无提交，无法对比',
+		compareUpstreamMissing: '上游引用不存在，可能已被删除',
+		compareSuggested: '未设置上游'
+	}
+	const target = { label: 'origin/main' }
+	assert.equal(
+		compareRelationText(t, { target, relation: 'in-sync', ahead: { count: 0 }, behind: { count: 0 } }),
+		'与 origin/main 同步'
+	)
+	assert.equal(
+		compareRelationText(t, { target, relation: 'ahead', ahead: { count: 2 }, behind: { count: 0 } }),
+		'领先 origin/main ↑2'
+	)
+	assert.equal(
+		compareRelationText(t, { target, relation: 'behind', ahead: { count: 0 }, behind: { count: 3 } }),
+		'落后 origin/main ↓3'
+	)
+	assert.equal(
+		compareRelationText(t, { target, relation: 'diverged', ahead: { count: 2 }, behind: { count: 3 } }),
+		'与 origin/main 已分叉 ↑2 ↓3'
+	)
+	assert.ok(
+		compareRelationText(t, {
+			target,
+			relation: 'behind',
+			targetKind: 'suggested',
+			ahead: { count: 0 },
+			behind: { count: 1 }
+		}).indexOf('未设置上游 · 落后 origin/main ↓1') === 0
+	)
+	assert.equal(compareRelationText(t, { target: null, reason: 'no-upstream' }), '未设置上游')
+	assert.equal(compareRelationText(t, { target: null, reason: 'detached' }), '游离 HEAD，无法对比上游')
+	assert.equal(compareRelationText(t, null), null)
 })
 
 console.log(`\n${passed} 项通过`)
