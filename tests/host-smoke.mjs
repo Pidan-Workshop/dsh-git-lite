@@ -38,6 +38,7 @@ import {
 	parseStatus,
 	pullSummary,
 	pushSummary,
+	remoteRefsToken,
 	resolveRepo,
 	splitRemoteRef,
 	stashSummary,
@@ -135,6 +136,17 @@ check('尚无提交时 head 为 null 且不算游离', () => {
 	assert.equal(s.head, null)
 	assert.equal(s.detached, false)
 	assert.equal(s.branch, 'main')
+})
+
+check('远端引用指纹：内容变了才变，空列表为 null', () => {
+	// 无 upstream 的分支靠这个指纹发现外部 fetch；只在引用内容变化时换值，
+	// 否则每 3 秒轮询都会误重载一次。
+	const a = 'refs/remotes/origin/main\tabc123\nrefs/remotes/origin/dev\tdef456\n'
+	assert.equal(remoteRefsToken(a), remoteRefsToken(a))
+	assert.notEqual(remoteRefsToken(a), remoteRefsToken('refs/remotes/origin/main\tffff\nrefs/remotes/origin/dev\tdef456\n'))
+	assert.notEqual(remoteRefsToken(a), remoteRefsToken('refs/remotes/origin/main\tabc123\n'))
+	assert.equal(remoteRefsToken(''), null)
+	assert.equal(remoteRefsToken('\n'), null)
 })
 
 // 未解决冲突（porcelain v2 的 `u` 记录）。实测形状：

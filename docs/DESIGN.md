@@ -33,8 +33,10 @@
   两条线混排会伪造线性历史，merge 提交和分页都会变得没有稳定锚点。
 - 刷新链路是这次的关键：`fetch` / `pull` / `push` / `checkout` / `commit` 之后
   必须重载 log + compare。轮询侧比较的是折叠后的同步键（`head + branch +
-  upstream + ahead + behind`），不是只看 HEAD：外部 `git fetch` 只改远端跟踪
-  引用与 ahead/behind，HEAD 不变；只比 HEAD 会让对比条停在旧结果。key 稳定时
+  upstream + ahead + behind + remoteRefs`），不是只看 HEAD：外部 `git fetch`
+  只改远端跟踪引用与 ahead/behind，HEAD 不变；只比 HEAD 会让对比条停在旧结果。
+  `remoteRefs` 是宿主给的远端引用指纹 —— 没有 upstream 的分支会临时对比同名
+  远端分支，此时 ahead/behind 恒为 0，只有这个指纹能发现远端变了。key 稳定时
   不做任何事，避免每 3 秒重载一次。只刷新 status 会出现「ahead/behind 变了但
   历史还是旧的」。
 
@@ -669,7 +671,7 @@ if(why!=="OK 有仓库")console.log(why.padEnd(16),c)}}catch{}}}' | sort | uniq 
 ```sh
 node --check lib/index.js
 node --check lib/client.js
-node tests/host-smoke.mjs     # 67 项：porcelain v2 解析、冲突闸门、分支/远端 ref 解析、fetch coverage、compare 计数与关系、鉴权拒绝面、包含关系回退、log/show 解析、路由装配（含 /compare）、LLM 消息契约与终止分片、打包契约（dsh.bundle.patch / dsh.client / files / peer 闸门 与 cordis.patch.yml 自洽、locale 语言映射）
+node tests/host-smoke.mjs     # 68 项：porcelain v2 解析、冲突闸门、分支/远端 ref 解析、fetch coverage、compare 计数与关系、远端引用指纹、鉴权拒绝面、包含关系回退、log/show 解析、路由装配（含 /compare）、LLM 消息契约与终止分片、打包契约（dsh.bundle.patch / dsh.client / files / peer 闸门 与 cordis.patch.yml 自洽、locale 语言映射）
 node tests/client-smoke.mjs   # 79 项：注册点与 disposer + 注册冲突重试 + 0.2.0 契约闸门 + 委派路径真点击 + 胶囊状态机 + clamp + 日期分组 + 组头批量按钮与冲突态 + 分支分组/远端检出 + 上游对比/远端独有区 + 刷新链路 + 同步键 + 渲染层检查 + zh/en 字典键对齐
 npm test                      # 两个都跑
 ```
@@ -693,5 +695,5 @@ npm test                      # 两个都跑
 | `冲突委派：同样走 conversation.send` | 同上，且文案必须含「不要提交」 |
 | `会话通道不可用时立刻报错，而不是假装成功` | 没有 conversation 时不抛、也不误报成功 |
 | `打包契约：dsh.bundle.patch / dsh.client / exports 与 cordis.patch.yml 自洽` | 清单写错导致插件**静默不加载**（症状与「装错 profile」「没重启」一模一样，最难查）；顺带钉住 peer 里必须有一个 `@deepseek-ai/dsh*`，否则兼容性闸门形同虚设 |
-| `同步键覆盖 HEAD / 分支 / 上游 / ahead / behind` | 外部 `git fetch` 后只有 ahead/behind 变化时，历史与对比不刷新（只比较 HEAD 的旧实现） |
+| `同步键覆盖 HEAD / 分支 / 上游 / ahead / behind / remoteRefs` | 外部 `git fetch` 后只有 ahead/behind 或远端引用变化时，历史与对比不刷新（只比较 HEAD 的旧实现；含无上游的临时对比） |
 

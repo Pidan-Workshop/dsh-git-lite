@@ -6,7 +6,7 @@
 ## 发布前检查（可在无登录状态下完成）
 
 ```sh
-npm test                 # host 67 项 + client 79 项
+npm test                 # host 68 项 + client 79 项
 npm pack --dry-run       # 看 tarball 里到底有哪些文件
 ```
 

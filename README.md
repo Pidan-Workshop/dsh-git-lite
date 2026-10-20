@@ -30,7 +30,7 @@ A lite Git tab for the DeepSeek Harness sidebar, for both the web and desktop bu
 
 - **远端分支可见**：分支下拉按「本地 / 远端」分组，远端分支可直接检出为本地跟踪分支；同名本地分支已跟踪别的远端时明确拒绝，不静默切换。
 - **历史顶部显示上游关系**：同步 / 领先 / 落后 / 已分叉；落后的远端独有提交单独成区，本地未推送提交带「未推送」徽标。
-- **外部 `git fetch` 也能跟上**：面板轮询会比较 HEAD、分支、上游与 ahead/behind，在终端里抓取后历史与对比会自动重载。
+- **外部 `git fetch` 也能跟上**：面板轮询会比较 HEAD、分支、上游、远端引用与 ahead/behind，在终端里抓取后历史与对比会自动重载。
 - 抓取 / 拉取 / 推送 / 切分支 / 提交之后统一重载历史与对比；单分支克隆的 fetch 覆盖范围会在分支下拉与抓取提示里说明。
 - 提示行改为「一行成功摘要 + 可关闭的失败诊断块」。
 
@@ -258,7 +258,7 @@ dsh plugin --profile desktop allow-version dsh-git-lite@0.3.0 --dsh-version <精
 ```sh
 node --check lib/index.js
 node --check lib/client.js
-npm test                      # host 冒烟 67 项 + client 冒烟 79 项
+npm test                      # host 冒烟 68 项 + client 冒烟 79 项
 ```
 
 两个冒烟测试都不需要 DSH 运行时，但 host 冒烟会**真的调用本机 git**（`resolveRepo`

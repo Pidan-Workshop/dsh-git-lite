@@ -1180,22 +1180,28 @@ check('刷新链路：fetch / checkout / push 之后历史会重载，而不是�
 	assert.match(src, /\[\s*statusKey\s*\]/)
 })
 
-check('同步键覆盖 HEAD / 分支 / 上游 / ahead / behind，事实不变时保持稳定', () => {
+check('同步键覆盖 HEAD / 分支 / 上游 / ahead / behind / remoteRefs，事实不变时保持稳定', () => {
 	// 真机症状：在终端里 git fetch 完，头部 ahead/behind 变了，但历史顶部的
 	// 对比条和「远端独有」区还是旧的，直到手动点刷新。
 	const { statusSyncKey } = mod.__internals
-	const base = { head: 'a1', branch: 'main', upstream: 'origin/main', ahead: 0, behind: 0 }
+	const base = { head: 'a1', branch: 'main', upstream: 'origin/main', ahead: 0, behind: 0, remoteRefs: 'r1' }
 	const key = statusSyncKey(base)
 
 	assert.equal(statusSyncKey(Object.assign({}, base)), key, '事实不变时 key 必须稳定，否则每 3 秒都会重载一次')
 	assert.notEqual(statusSyncKey(Object.assign({}, base, { behind: 3 })), key, '外部 fetch 带来的 behind 变化必须换 key')
 	assert.notEqual(statusSyncKey(Object.assign({}, base, { ahead: 2 })), key, 'commit / 外部 fetch 带来的 ahead 变化必须换 key')
 	assert.notEqual(
-		statusSyncKey({ head: 'a1', branch: 'dev', upstream: 'origin/dev', ahead: 0, behind: 0 }),
+		statusSyncKey({ head: 'a1', branch: 'dev', upstream: 'origin/dev', ahead: 0, behind: 0, remoteRefs: 'r1' }),
 		key,
 		'同一个 sha 上切到另一个分支也必须换 key'
 	)
 	assert.notEqual(statusSyncKey(Object.assign({}, base, { upstream: 'origin/next' })), key, '上游改绑必须换 key')
+	// 没有 upstream 的临时对比：ahead/behind 恒为 0，只能靠远端引用指纹发现变化。
+	assert.notEqual(
+		statusSyncKey({ head: 'a1', branch: 'feature', upstream: null, ahead: 0, behind: 0, remoteRefs: 'r2' }),
+		statusSyncKey({ head: 'a1', branch: 'feature', upstream: null, ahead: 0, behind: 0, remoteRefs: 'r1' }),
+		'无上游时远端引用变化也必须换 key'
+	)
 	// 尚无提交 / 还没有 status：不参与比较，首次加载交给历史 effect。
 	assert.equal(statusSyncKey(null), null)
 	assert.equal(statusSyncKey({ head: null, branch: null }), null)
