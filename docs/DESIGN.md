@@ -32,12 +32,16 @@
 - 历史列表把「远端独有」提交放在最前，作为**独立区块**，不按日期混进本地时间线：
   两条线混排会伪造线性历史，merge 提交和分页都会变得没有稳定锚点。
 - 刷新链路是这次的关键：`fetch` / `pull` / `push` / `checkout` / `commit` 之后
-  必须重载 log + compare；`status.head` 变化也自动 bump 历史 nonce（外部 rebase
-  也能跟上）。只刷新 status 会出现「ahead/behind 变了但历史还是旧的」。
+  必须重载 log + compare。轮询侧比较的是折叠后的同步键（`head + branch +
+  upstream + ahead + behind`），不是只看 HEAD：外部 `git fetch` 只改远端跟踪
+  引用与 ahead/behind，HEAD 不变；只比 HEAD 会让对比条停在旧结果。key 稳定时
+  不做任何事，避免每 3 秒重载一次。只刷新 status 会出现「ahead/behind 变了但
+  历史还是旧的」。
 
-## 目标运行时：0.2.0-rc.2，Web 与桌面同一套组合
+## 目标运行时：0.2.1-rc.2，Web 与桌面同一套组合
 
-升级到 **DSH `0.2.0-rc.2`** 时先查清了一件事：**桌面版与 Web 版不是两套插件运行时**。
+0.3.0 的目标运行时是 **DSH `0.2.1-rc.2`**，它沿用 0.2.0-rc.2 的同一套侧边栏契约。
+下面这些结论是在升级到 **DSH `0.2.0-rc.2`** 时查清的：**桌面版与 Web 版不是两套插件运行时**。
 `~/.dsh/profiles/desktop/package.json` 与 `profiles/web` 的 `dsh.profile.bundles` 完全一致
 （`@deepseek-ai/dsh-base` + `@deepseek-ai/dsh-web-app`），桌面只是多了 `dsh-desktop-host`
 （Electron 外壳 + 原生 picker / Office→PDF / koffi），UI 仍由同一个 `dsh-host-webserver`
@@ -62,7 +66,8 @@
 版本闸门也一并用上了：`dsh` 的 `evaluatePluginCompatibility()` 只检查
 `@deepseek-ai/dsh` 与 `@deepseek-ai/dsh-*` 的 peer（`@deepseek-ai/cordis` 不在其列），
 在**安装时与每次启动时**都会校验。所以 `package.json` 声明了
-`@deepseek-ai/dsh-client-ui-sidebar-right: ^0.2.0-rc.2`，并把该 peer 标为 `optional`
+`@deepseek-ai/dsh-client-ui-sidebar-right: ^0.2.0-rc.2`（闸门按 prerelease 解析，
+0.2.1-rc.2 能通过），并把该 peer 标为 `optional`
 （标记只影响 pnpm 的 unmet-peer 提示，闸门照查），让运行时版本不匹配时**明确拒绝加载**，
 而不是让插件半死不活。
 
@@ -665,7 +670,7 @@ if(why!=="OK 有仓库")console.log(why.padEnd(16),c)}}catch{}}}' | sort | uniq 
 node --check lib/index.js
 node --check lib/client.js
 node tests/host-smoke.mjs     # 67 项：porcelain v2 解析、冲突闸门、分支/远端 ref 解析、fetch coverage、compare 计数与关系、鉴权拒绝面、包含关系回退、log/show 解析、路由装配（含 /compare）、LLM 消息契约与终止分片、打包契约（dsh.bundle.patch / dsh.client / files / peer 闸门 与 cordis.patch.yml 自洽、locale 语言映射）
-node tests/client-smoke.mjs   # 78 项：注册点与 disposer + 注册冲突重试 + 0.2.0 契约闸门 + 委派路径真点击 + 胶囊状态机 + clamp + 日期分组 + 组头批量按钮与冲突态 + 分支分组/远端检出 + 上游对比/远端独有区 + 刷新链路 + 渲染层检查 + zh/en 字典键对齐
+node tests/client-smoke.mjs   # 79 项：注册点与 disposer + 注册冲突重试 + 0.2.0 契约闸门 + 委派路径真点击 + 胶囊状态机 + clamp + 日期分组 + 组头批量按钮与冲突态 + 分支分组/远端检出 + 上游对比/远端独有区 + 刷新链路 + 同步键 + 渲染层检查 + zh/en 字典键对齐
 npm test                      # 两个都跑
 ```
 
@@ -678,7 +683,7 @@ npm test                      # 两个都跑
 当"存在但不是仓库"的样本（Windows 上它不存在，错误码从 `workspace-unknown` 变成
 `no-workspace`）。现在前者读源码时归一化行尾，后者改用 `os.tmpdir()`。
 
-### 新增回归用例（0.2.0 迁移）
+### 新增回归用例（0.2.0 迁移与 0.3.0）
 
 | 用例 | 钉住的回归 |
 |---|---|
@@ -688,4 +693,5 @@ npm test                      # 两个都跑
 | `冲突委派：同样走 conversation.send` | 同上，且文案必须含「不要提交」 |
 | `会话通道不可用时立刻报错，而不是假装成功` | 没有 conversation 时不抛、也不误报成功 |
 | `打包契约：dsh.bundle.patch / dsh.client / exports 与 cordis.patch.yml 自洽` | 清单写错导致插件**静默不加载**（症状与「装错 profile」「没重启」一模一样，最难查）；顺带钉住 peer 里必须有一个 `@deepseek-ai/dsh*`，否则兼容性闸门形同虚设 |
+| `同步键覆盖 HEAD / 分支 / 上游 / ahead / behind` | 外部 `git fetch` 后只有 ahead/behind 变化时，历史与对比不刷新（只比较 HEAD 的旧实现） |
 

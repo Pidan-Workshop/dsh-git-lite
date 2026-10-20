@@ -42,7 +42,7 @@ if [ -z "$CLI" ]; then
 ❌ 找不到 dsh CLI。
    · 桌面版：用 install.ps1（会自动发现桌面自带的 dsh.cmd），
      或先设 DSH_DESKTOP_DIR=<桌面安装目录>。
-   · Web 版：需要 PATH 上有 dsh（npm i -g @deepseek-ai/dsh@0.2.0-rc.2）。
+   · Web 版：需要 PATH 上有 dsh（npm i -g @deepseek-ai/dsh@0.2.1-rc.2）。
    · 也可以直接给 DSH_CLI=<dsh 可执行文件路径>。
 EOF
   exit 1

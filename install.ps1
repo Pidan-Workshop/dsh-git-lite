@@ -25,7 +25,7 @@
 
 .PARAMETER Spec
   安装源，默认把本仓库以 link: 方式链进去（改完代码刷新页面即生效）。
-  也可以传版本号/路径/tarball，例如 dsh-git-lite、./dsh-git-lite-0.2.0.tgz。
+  也可以传版本号/路径/tarball，例如 dsh-git-lite、./dsh-git-lite-0.3.0.tgz。
 
 .PARAMETER Copy
   把默认的 link: 换成 file:（复制一份，而不是软链本仓库）。

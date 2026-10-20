@@ -6,7 +6,7 @@
 ## 发布前检查（可在无登录状态下完成）
 
 ```sh
-npm test                 # host 49 项 + client 62 项
+npm test                 # host 67 项 + client 79 项
 npm pack --dry-run       # 看 tarball 里到底有哪些文件
 ```
 
@@ -47,10 +47,10 @@ npm login          # 浏览器授权 + 可能的 OTP
 npm whoami         # 应输出你的 npm 用户名
 ```
 
-### 2. 确认名字仍可用
+### 2. 确认线上版本
 
 ```sh
-npm view dsh-git-lite version     # 首次发布应为 E404 Not Found
+npm view dsh-git-lite version     # 当前线上应为 0.2.0；首次发布时才是 E404
 ```
 
 ### 3. 真实打包并冒烟
@@ -77,8 +77,8 @@ npm publish               # prepublishOnly 会先自动跑 npm test
 ### 5. 打 tag 并推送
 
 ```sh
-git tag -a v0.2.0 -m 'dsh-git-lite v0.2.0 — DSH 0.2.0-rc.2（Web + 桌面）'
-git push origin v0.2.0
+git tag -a v0.3.0 -m 'dsh-git-lite v0.3.0 — DSH 0.2.1-rc.2（Web + 桌面）'
+git push origin v0.3.0
 ```
 
 ### 6. 发布后验证
@@ -111,7 +111,7 @@ Web 版：`dsh plugin --profile web add dsh-git-lite`。
 
 **与 DSH 目标版本解耦**：本包版本号跟自己的改动走，不跟 dsh 的版本号对齐。
 "支持哪个 dsh"由 `peerDependencies` 的 `@deepseek-ai/dsh-client-ui-sidebar-right` 范围表达
-（当前 `^0.2.0-rc.2`），dsh 会在安装与启动时校验它。升 dsh 目标版本时改这个范围。
+（当前 `^0.2.0-rc.2`；DSH 的闸门按 prerelease 解析，0.2.1-rc.2 能通过），dsh 会在安装与启动时校验它。升 dsh 目标版本时改这个范围。
 
 ```sh
 npm version patch   # 或 minor / major；会顺手打一个 git commit + tag
@@ -119,17 +119,15 @@ npm version patch   # 或 minor / major；会顺手打一个 git commit + tag
 
 ## 出错了怎么办
 
-- **发错版本**：优先用 `npm deprecate dsh-git-lite@0.2.0 "说明"` 标记，而不是撤销。
+- **发错版本**：优先用 `npm deprecate dsh-git-lite@0.3.0 "说明"` 标记，而不是撤销。
   按 npm 现行规则，`npm unpublish` 有 72 小时窗口、且该版本号**不能再次发布**，
   名字占用与下载统计都不可逆。
 - **包内容不对**：改完重新 `npm version patch` 再发，不要试图覆盖已发布的版本号。
 
 ## 已知缺口
 
-- **本机没有独立的 `dsh`**（PATH 上没有，也没有全局安装），所以
-  `dsh plugin --profile web add ...` 这条 **Web** 路径无法在本机验证 —— 桌面版路径可以，
-  因为桌面自带 `resources/runtime/cli/bin/dsh.cmd` 且它自带 pnpm。
-  要验 Web 路径，先 `npm i -g @deepseek-ai/dsh@0.2.0-rc.2`（**必须是同一个 0.2.0-rc.2**，
-  否则 web profile 会按另一个 anchor 解析 bundle，行为与桌面版不一致）。
+- 当前开发机的 `dsh` 是桌面自带 CLI 的符号链接（0.2.1-rc.2），所以 Web 的安装路径
+  可以在本机验证；换一台机器时仍需先装同版本的 `dsh`，否则 web profile 会按另一个
+  anchor 解析 bundle，行为与桌面版不一致。
 - `docs/PUBLISHING.md` 本身不在 `package.json` 的 `files` 里，因此不会随包发布 ——
   它是给维护者看的，放仓库就够。

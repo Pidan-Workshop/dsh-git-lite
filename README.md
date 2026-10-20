@@ -7,7 +7,7 @@ A lite Git tab for the DeepSeek Harness sidebar, for both the web and desktop bu
 - 轻量：只做基础 Git 操作，不做 DAG 图、不做交互式 rebase。
 - 原生行为：调用本机 `git` 二进制，遵守你的 `~/.gitconfig`、hooks 和凭据配置，不另存 token。
 - 无依赖、无构建：纯 JS，`dependencies` 为空。
-- 面向 **DSH `0.2.0-rc.2`**；Web 与桌面是同一套 Web 组合，所以同一份代码两边都能跑（差别只在装进哪个 profile，见「安装」）。
+- 面向 **DSH `0.2.1-rc.2`**；Web 与桌面是同一套 Web 组合，所以同一份代码两边都能跑（差别只在装进哪个 profile，见「安装」）。
 
 ## 功能
 
@@ -26,6 +26,16 @@ A lite Git tab for the DeepSeek Harness sidebar, for both the web and desktop bu
 
 界面语言跟随 DSH 的 locale（中文 / English），配色取 DSH 设计令牌，因此**明暗主题与第三方主题包自动跟随**。
 
+## 0.3.0 更新
+
+- **远端分支可见**：分支下拉按「本地 / 远端」分组，远端分支可直接检出为本地跟踪分支；同名本地分支已跟踪别的远端时明确拒绝，不静默切换。
+- **历史顶部显示上游关系**：同步 / 领先 / 落后 / 已分叉；落后的远端独有提交单独成区，本地未推送提交带「未推送」徽标。
+- **外部 `git fetch` 也能跟上**：面板轮询会比较 HEAD、分支、上游与 ahead/behind，在终端里抓取后历史与对比会自动重载。
+- 抓取 / 拉取 / 推送 / 切分支 / 提交之后统一重载历史与对比；单分支克隆的 fetch 覆盖范围会在分支下拉与抓取提示里说明。
+- 提示行改为「一行成功摘要 + 可关闭的失败诊断块」。
+
+从 0.2.x 升级不需要改配置；**重启应用**即可（宿主半区新增了只读的 `/compare` 路由）。
+
 ## 安装
 
 > **profile 是分开的。** 桌面版读 `~/.dsh/profiles/desktop`，Web 版读 `~/.dsh/profiles/web`。
@@ -38,7 +48,7 @@ A lite Git tab for the DeepSeek Harness sidebar, for both the web and desktop bu
 
 ### 前置条件
 
-- **DSH `0.2.0-rc.2`**。Web 版与桌面版跑的是同一套 Web 组合，所以两边行为一致，本版本两边都验证。
+- **DSH `0.2.1-rc.2`**。Web 版与桌面版跑的是同一套 Web 组合，所以两边行为一致；本版本已在 0.2.1-rc.2 的桌面版实测。
   插件依赖官方右侧栏框架 `@deepseek-ai/dsh-client-ui-sidebar-right` 的 0.2.0 契约。
 - 本机有 `git`（面板直接调用它）。**不需要 pnpm** —— 桌面自带的 CLI 内含 pnpm。
 
@@ -57,7 +67,7 @@ A lite Git tab for the DeepSeek Harness sidebar, for both the web and desktop bu
 
 ```powershell
 .\install.cmd -DryRun
-# 桌面安装：E:\Application\DeepSeek Harness  (DSH 0.2.0-rc.2)
+# 桌面安装：E:\Application\DeepSeek Harness  (DSH 0.2.1-rc.2)
 # CLI      ：…\resources\runtime\cli\bin\dsh.cmd
 # profile  ：desktop  (C:\Users\<你>\.dsh\profiles\desktop)
 # 安装源   ：link:E:\Game\Pidan-Workshop\dsh-git-lite
@@ -78,7 +88,7 @@ A lite Git tab for the DeepSeek Harness sidebar, for both the web and desktop bu
 ### Web 版
 
 ```sh
-# 同版本的 dsh 在 PATH 上（npm i -g @deepseek-ai/dsh@0.2.0-rc.2）
+# 同版本的 dsh 在 PATH 上（npm i -g @deepseek-ai/dsh@0.2.1-rc.2）
 dsh plugin --profile web add dsh-git-lite                    # npm 发布后
 dsh plugin --profile web add /path/to/dsh-git-lite           # 本地目录
 dsh plugin --profile web add link:/path/to/dsh-git-lite      # 链接安装，改完刷新即生效
@@ -107,11 +117,11 @@ dsh.cmd plugin --profile web add dsh-git-lite
 ### 版本不兼容会被拦下
 
 `package.json` 对 `@deepseek-ai/dsh-client-ui-sidebar-right` 声明了 peer 范围
-`^0.2.0-rc.2`。dsh 在**安装时与每次启动时**都会读它，运行时版本不满足会明确拒绝，
+`^0.2.0-rc.2`（DSH 的兼容闸门按 prerelease 解析，0.2.1-rc.2 能通过）。dsh 在**安装时与每次启动时**都会读它，运行时版本不满足会明确拒绝，
 而不是让插件半死不活。确实要放行（自担崩溃与数据损坏风险）：
 
 ```sh
-dsh plugin --profile desktop allow-version dsh-git-lite@0.2.0 --dsh-version <精确运行时版本> --accept-risk
+dsh plugin --profile desktop allow-version dsh-git-lite@0.3.0 --dsh-version <精确运行时版本> --accept-risk
 ```
 
 ### 从 0.1.5-rc.2 升级
@@ -215,7 +225,7 @@ dsh plugin --profile desktop allow-version dsh-git-lite@0.2.0 --dsh-version <精
 1. **装到哪个 profile 了？** 桌面版读 `desktop`，Web 版读 `web`，两者互不相通。
    查 `~/.dsh/profiles/<profile>/package.json` 的 `dsh.profile.bundles` 里有没有 `dsh-git-lite`。
 2. **重启过应用吗？** 装/卸都需要重启才生效。
-3. **启动被告知版本不兼容了吗？** `package.json` 的 peer 范围是 `^0.2.0-rc.2`；
+3. **启动被告知版本不兼容了吗？** `package.json` 的 peer 范围是 `^0.2.0-rc.2`（prerelease 会被放行，0.2.1-rc.2 不受影响）；
    运行时不是 0.2.x 时 dsh 会明确拒绝加载，而不是静默。按 README「版本不兼容会被拦下」处理。
 
 **胶囊一直是灰色「无仓库」？**
@@ -248,7 +258,7 @@ dsh plugin --profile desktop allow-version dsh-git-lite@0.2.0 --dsh-version <精
 ```sh
 node --check lib/index.js
 node --check lib/client.js
-npm test                      # host 冒烟 67 项 + client 冒烟 78 项
+npm test                      # host 冒烟 67 项 + client 冒烟 79 项
 ```
 
 两个冒烟测试都不需要 DSH 运行时，但 host 冒烟会**真的调用本机 git**（`resolveRepo`
