@@ -1174,7 +1174,31 @@ check('刷新链路：fetch / checkout / push 之后历史会重载，而不是�
 	assert.match(src, /function onPull\(\)[\s\S]{0,400}?afterHistoryMutation\(\)/)
 	assert.match(src, /function onCheckout\(branch\)[\s\S]{0,500}?afterHistoryMutation\(\)/)
 	assert.match(src, /function onPushConfirm\(\)[\s\S]{0,700}?afterHistoryMutation\(\)/)
-	assert.match(src, /lastHead\.current !== head[\s\S]{0,120}?setLogNonce/)
+	// 轮询触发条件必须比较同步键，而不是只看 HEAD：外部 `git fetch` 后
+	// HEAD 不变，ahead/behind 变了，历史与对比也要跟着重载。
+	assert.match(src, /lastSyncKey\.current !== statusKey[\s\S]{0,140}?setLogNonce/)
+	assert.match(src, /\[\s*statusKey\s*\]/)
+})
+
+check('同步键覆盖 HEAD / 分支 / 上游 / ahead / behind，事实不变时保持稳定', () => {
+	// 真机症状：在终端里 git fetch 完，头部 ahead/behind 变了，但历史顶部的
+	// 对比条和「远端独有」区还是旧的，直到手动点刷新。
+	const { statusSyncKey } = mod.__internals
+	const base = { head: 'a1', branch: 'main', upstream: 'origin/main', ahead: 0, behind: 0 }
+	const key = statusSyncKey(base)
+
+	assert.equal(statusSyncKey(Object.assign({}, base)), key, '事实不变时 key 必须稳定，否则每 3 秒都会重载一次')
+	assert.notEqual(statusSyncKey(Object.assign({}, base, { behind: 3 })), key, '外部 fetch 带来的 behind 变化必须换 key')
+	assert.notEqual(statusSyncKey(Object.assign({}, base, { ahead: 2 })), key, 'commit / 外部 fetch 带来的 ahead 变化必须换 key')
+	assert.notEqual(
+		statusSyncKey({ head: 'a1', branch: 'dev', upstream: 'origin/dev', ahead: 0, behind: 0 }),
+		key,
+		'同一个 sha 上切到另一个分支也必须换 key'
+	)
+	assert.notEqual(statusSyncKey(Object.assign({}, base, { upstream: 'origin/next' })), key, '上游改绑必须换 key')
+	// 尚无提交 / 还没有 status：不参与比较，首次加载交给历史 effect。
+	assert.equal(statusSyncKey(null), null)
+	assert.equal(statusSyncKey({ head: null, branch: null }), null)
 })
 
 check('日期分组标题不加下边框（否则会横穿导轨）', () => {
