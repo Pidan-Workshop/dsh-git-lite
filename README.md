@@ -26,6 +26,16 @@ A lite Git tab for the DeepSeek Harness sidebar, for both the web and desktop bu
 
 界面语言跟随 DSH 的 locale（中文 / English），配色取 DSH 设计令牌，因此**明暗主题与第三方主题包自动跟随**。
 
+## 0.4.0 更新
+
+- **无上游分支可以发布**：新建的本地分支、或远端分支被删后 `upstream` 还在（`[gone]`）时，推送按钮不再永久变灰，而是变成「发布分支」；预览后确认会创建远端分支并建立 upstream。
+- **远端选择不猜**：`origin` 优先；没有 `origin` 时只有唯一 remote 才自动选；多个 remote 且没有 `origin` 会明确报错。upstream 已配置但引用被删时，沿用原来的 remote / 分支名重新发布。
+- **两阶段确认更完整**：publish 预览额外核对远端与目标引用（防 TOCTOU），执行 `git push --set-upstream`，仍然没有任何 force 入口。
+- 预览里的提交列表上限 100 条，避免首次发布老仓库时把整部历史塞进弹层。
+- 测试：host 71 项、client 83 项。
+
+从 0.3.0 升级不需要改配置；**宿主半区有改动，重启应用**即可。
+
 ## 0.3.0 更新
 
 - **远端分支可见**：分支下拉按「本地 / 远端」分组，远端分支可直接检出为本地跟踪分支；同名本地分支已跟踪别的远端时明确拒绝，不静默切换。
@@ -121,7 +131,7 @@ dsh.cmd plugin --profile web add dsh-git-lite
 而不是让插件半死不活。确实要放行（自担崩溃与数据损坏风险）：
 
 ```sh
-dsh plugin --profile desktop allow-version dsh-git-lite@0.3.0 --dsh-version <精确运行时版本> --accept-risk
+dsh plugin --profile desktop allow-version dsh-git-lite@0.4.0 --dsh-version <精确运行时版本> --accept-risk
 ```
 
 ### 从 0.1.5-rc.2 升级

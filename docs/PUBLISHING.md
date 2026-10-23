@@ -6,7 +6,7 @@
 ## 发布前检查（可在无登录状态下完成）
 
 ```sh
-npm test                 # host 68 项 + client 79 项
+npm test                 # host 71 项 + client 83 项
 npm pack --dry-run       # 看 tarball 里到底有哪些文件
 ```
 
@@ -50,7 +50,7 @@ npm whoami         # 应输出你的 npm 用户名
 ### 2. 确认线上版本
 
 ```sh
-npm view dsh-git-lite version     # 当前线上应为 0.2.0；首次发布时才是 E404
+npm view dsh-git-lite version     # 发布 0.4.0 前，当前线上应为 0.3.0；首次发布时才是 E404
 ```
 
 ### 3. 真实打包并冒烟
@@ -77,8 +77,8 @@ npm publish               # prepublishOnly 会先自动跑 npm test
 ### 5. 打 tag 并推送
 
 ```sh
-git tag -a v0.3.0 -m 'dsh-git-lite v0.3.0 — DSH 0.2.1-rc.2（Web + 桌面）'
-git push origin v0.3.0
+git tag -a v0.4.0 -m 'dsh-git-lite v0.4.0 — DSH 0.2.1-rc.2（Web + 桌面）'
+git push origin v0.4.0
 ```
 
 ### 6. 发布后验证
@@ -105,9 +105,9 @@ Web 版：`dsh plugin --profile web add dsh-git-lite`。
 
 | 改动 | 版本 |
 |---|---|
-| 修 bug、改文案、内部重构 | `0.2.1` |
-| 新增功能 / 新增配置项 | `0.3.0` |
-| 配置项语义变更、行为不兼容 | `0.4.0`（`0.x` 里 breaking 也升 minor） |
+| 修 bug、改文案、内部重构 | 升 patch（如 `0.3.0 → 0.3.1`） |
+| 新增功能 / 新增配置项 | 升 minor（如 `0.3.0 → 0.4.0`） |
+| 配置项语义变更、行为不兼容 | 升 minor（`0.x` 里 breaking 也升 minor，如 `0.4.0 → 0.5.0`） |
 
 **与 DSH 目标版本解耦**：本包版本号跟自己的改动走，不跟 dsh 的版本号对齐。
 "支持哪个 dsh"由 `peerDependencies` 的 `@deepseek-ai/dsh-client-ui-sidebar-right` 范围表达
@@ -119,7 +119,7 @@ npm version patch   # 或 minor / major；会顺手打一个 git commit + tag
 
 ## 出错了怎么办
 
-- **发错版本**：优先用 `npm deprecate dsh-git-lite@0.3.0 "说明"` 标记，而不是撤销。
+- **发错版本**：优先用 `npm deprecate dsh-git-lite@0.4.0 "说明"` 标记，而不是撤销。
   按 npm 现行规则，`npm unpublish` 有 72 小时窗口、且该版本号**不能再次发布**，
   名字占用与下载统计都不可逆。
 - **包内容不对**：改完重新 `npm version patch` 再发，不要试图覆盖已发布的版本号。

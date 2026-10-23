@@ -67,7 +67,7 @@
 
 ## 目标运行时：0.2.1-rc.2，Web 与桌面同一套组合
 
-0.3.0 的目标运行时是 **DSH `0.2.1-rc.2`**，它沿用 0.2.0-rc.2 的同一套侧边栏契约。
+0.4.0 的目标运行时是 **DSH `0.2.1-rc.2`**，它沿用 0.2.0-rc.2 的同一套侧边栏契约。
 下面这些结论是在升级到 **DSH `0.2.0-rc.2`** 时查清的：**桌面版与 Web 版不是两套插件运行时**。
 `~/.dsh/profiles/desktop/package.json` 与 `profiles/web` 的 `dsh.profile.bundles` 完全一致
 （`@deepseek-ai/dsh-base` + `@deepseek-ai/dsh-web-app`），桌面只是多了 `dsh-desktop-host`
@@ -710,7 +710,7 @@ npm test                      # 两个都跑
 当"存在但不是仓库"的样本（Windows 上它不存在，错误码从 `workspace-unknown` 变成
 `no-workspace`）。现在前者读源码时归一化行尾，后者改用 `os.tmpdir()`。
 
-### 新增回归用例（0.2.0 迁移与 0.3.0）
+### 新增回归用例（0.2.0 迁移与 0.3.0 / 0.4.0）
 
 | 用例 | 钉住的回归 |
 |---|---|
