@@ -1,8 +1,8 @@
 # dsh-git-lite
 
-DSH（DeepSeek Harness）右侧栏的轻量 Git 面板 —— **Web 版与桌面版通用**，**直接调用你本机的 `git`**，在侧边栏里看改动、行内 diff、拉取、推送、提交、切分支、stash，不用切到终端。
+DSH（DeepSeek Harness）右侧栏的轻量 Git 面板 —— **Web 版与桌面版通用**，**直接调用你本机的 `git`**，在侧边栏里看改动、行内 diff、拉取、推送、发布分支、提交、切分支、stash，不用切到终端。
 
-A lite Git tab for the DeepSeek Harness sidebar, for both the web and desktop builds, driven by your local git: changes, inline diff, pull, push, commit, branches and stash.
+A lite Git tab for the DeepSeek Harness sidebar, for both the web and desktop builds, driven by your local git: changes, inline diff, pull, push, publish branches, commit, branches and stash.
 
 - 轻量：只做基础 Git 操作，不做 DAG 图、不做交互式 rebase。
 - 原生行为：调用本机 `git` 二进制，遵守你的 `~/.gitconfig`、hooks 和凭据配置，不另存 token。
@@ -16,7 +16,7 @@ A lite Git tab for the DeepSeek Harness sidebar, for both the web and desktop bu
 | **查看改动** | 变更文件列表（状态码 `M/A/D/R/?` + 增删行数，按「**冲突** / 已暂存 / 变更 / 未跟踪」分组，冲突组只在有冲突时出现且排最前），点任意文件看**单栏行内着色 diff** |
 | **提交历史** | 提交列表（短 sha、信息、refs 徽标、作者、时间，按日期分组）→ 点开看该提交完整 patch 与文件清单 → 再点文件看单文件 diff；「加载更早的 50 条」分页。历史顶部显示**当前分支 ↔ 上游**的关系（同步 / 领先 / 落后 / 已分叉），落后的远端独有提交**单独成区**列在最前，本地未推送的提交带「未推送」徽标 |
 | **同步** | **拉取**（默认 `--ff-only`，分叉时明确拒绝而不是悄悄产生合并提交）、**抓取**（`fetch --all --prune`） |
-| **推送** | **两阶段确认**：先看将推送的分支 / 上游 / ahead 数 / commit 列表，确认后才真正执行 |
+| **推送 / 发布** | **两阶段确认**：先看将推送的分支 / 上游（或发布目标）/ ahead 数 / commit 列表，确认后才真正执行。**没有上游的本地分支**（新建分支，或远端分支被删）会走「发布分支」：推到 `origin`（没有 origin 时只有唯一 remote 才自动选），并建立 upstream |
 | **提交** | 暂存 / 取消暂存（可勾「全部暂存」）；两条提交路径见下 |
 | **批量暂存** | 两个分组的**标题右端**各有一个动作：「变更 / 未跟踪」组头 = `全部暂存`（`git add -A`）、「已暂存」组头 = `全部取消暂存`（`git restore --staged`）—— **只动暂存区、不提交**，且不额外占一行高度（代价：组头不是吸顶的，列表滚下去时会跟着滚走） |
 | **冲突** | 未解决冲突**单独成一组**排在列表最前（红色组头 + 文件行）。冲突行右侧是**不可点的 `!`**（不是 `−`/`+`：`git add` 会把冲突标记当成解决结果，而 `−` 正好会把它送进「变更」组拿到 `+`），详情区也不提供暂存 / 取消暂存。两条批量按钮同样**都拒绝执行**，唯一出路是「**Agent 解决冲突**」（只解决、不提交）。点开冲突文件能看到带 `<<<<<<<` 标记的差异；modify/delete 这类 git 不提供差异的冲突，面板会说明是哪种冲突以及两条出路。有冲突时**「提交」按钮也是禁用的** —— git 在存在未解决条目时一律拒绝提交 |
@@ -170,7 +170,15 @@ dsh plugin --profile desktop allow-version dsh-git-lite@0.3.0 --dsh-version <精
 1. 点「推送」→ 只返回**预览**：分支、上游、ahead 数、将要推送的 commit 列表。
 2. 你确认后才执行。确认时会校验 token 未用过、未过期，且 **HEAD 与分支仍与预览时一致**（防止预览之后仓库又变了）。
 
-另外，**force push 在结构上不可能**：推送命令的参数由宿主内部构造，只推当前分支到其上游，
+**没有上游的分支**（刚建的本地分支，或远端分支被删后 `upstream` 还在）按钮会变成
+「发布分支」：预览显示目标远端、将创建的远端分支和提交列表；确认后执行
+`git push --set-upstream <remote> <branch>`，一次完成「创建远端分支 + 建立 upstream」。
+远端选择**不猜**：`origin` 优先，没有 `origin` 时只有唯一 remote 才自动选；多个
+remote 且没有 `origin` 时明确报错，让你回终端指定。upstream 配置还在、但远端引用
+已被 prune 的分支，会沿用原来的 remote / 分支名重新发布，不会悄悄改到别的目标。
+
+另外，**force push 在结构上不可能**：普通推送只推当前分支到其上游；发布分支也只
+带 `--set-upstream` 和一个显式 refspec，没有任何 force 入口。argv 由宿主内部构造，
 客户端无法注入参数。
 
 ### 分支胶囊
@@ -258,7 +266,7 @@ dsh plugin --profile desktop allow-version dsh-git-lite@0.3.0 --dsh-version <精
 ```sh
 node --check lib/index.js
 node --check lib/client.js
-npm test                      # host 冒烟 68 项 + client 冒烟 79 项
+npm test                      # host 冒烟 71 项 + client 冒烟 83 项
 ```
 
 两个冒烟测试都不需要 DSH 运行时，但 host 冒烟会**真的调用本机 git**（`resolveRepo`
@@ -279,7 +287,7 @@ npm test                      # host 冒烟 68 项 + client 冒烟 79 项
   已注册工作区校验、以及「git 仓库根仍在该工作区内」三道闸门，所以不存在「让宿主在任意目录跑 git」这条路。
 - **参数由宿主构造**：`argv` 一律以数组传给 `execFile`，绝不由客户端拼接，不存在 shell 注入面；
   路径参数拒绝绝对路径与 `..` 逃逸，分支名以 `-` 开头直接拒绝。
-- **推送需二次确认**，且 force push 结构上不可能。
+- **推送 / 发布分支需二次确认**，且 force push 结构上不可能。
 
 ## License
 

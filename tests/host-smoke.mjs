@@ -36,6 +36,7 @@ import {
 	parseLog,
 	parseRefSnapshot,
 	parseStatus,
+	pickPublishRemote,
 	pullSummary,
 	pushSummary,
 	remoteRefsToken,
@@ -136,6 +137,17 @@ check('尚无提交时 head 为 null 且不算游离', () => {
 	assert.equal(s.head, null)
 	assert.equal(s.detached, false)
 	assert.equal(s.branch, 'main')
+})
+
+check('upstream 配了但引用被删（gone）时标记 upstreamMissing', () => {
+	// 真实形状：`## main...origin/main [gone]`，porcelain v2 仍有 branch.upstream，
+	// 但没有 branch.ab —— 后者是判断引用是否还在的唯一依据。
+	const gone = parseStatus('# branch.oid abc\0# branch.head main\0# branch.upstream origin/main\0')
+	assert.equal(gone.upstream, 'origin/main')
+	assert.equal(gone.upstreamMissing, true)
+	assert.equal(parseStatus(SAMPLE).upstreamMissing, false, '正常 upstream 不能误报 gone')
+	const none = parseStatus('# branch.oid abc\0# branch.head topic\0')
+	assert.equal(none.upstreamMissing, false, '没有 upstream 时不是 gone')
 })
 
 check('远端引用指纹：内容变了才变，空列表为 null', () => {
@@ -772,6 +784,153 @@ await acheck('集成：/branches 远端分组 + /compare 分叉 + 远端检出�
 	}
 })
 
+// 发布分支：本地新建分支没有 upstream 时，预览应走 publish 模式；确认后
+// `git push --set-upstream` 必须真的创建远端分支并把 upstream 配上。
+await acheck('集成：/push/preview + /push/confirm 发布无上游分支（真实 git）', async () => {
+	const root = mkdtempSync(join(tmpdir(), 'dsh-git-lite-publish-'))
+	try {
+		const bare = join(root, 'remote.git')
+		const work = join(root, 'work')
+		mkdirSync(work)
+		const git = (cwd, ...args) =>
+			execFileSync('git', args, { cwd, stdio: ['ignore', 'pipe', 'pipe'] }).toString().trim()
+		const init = (cwd) => {
+			git(cwd, 'init', '-q')
+			git(cwd, 'config', 'user.email', 'a@b.c')
+			git(cwd, 'config', 'user.name', 't')
+		}
+
+		git(root, 'init', '-q', '--bare', bare)
+		init(work)
+		git(work, 'remote', 'add', 'origin', bare)
+		git(work, 'checkout', '-qb', 'main')
+		git(work, 'commit', '-qm', 'c1 base', '--allow-empty')
+		git(work, 'push', '-qu', 'origin', 'main')
+		git(work, 'checkout', '-qb', 'topic')
+		git(work, 'commit', '-qm', 'c2 topic', '--allow-empty')
+
+		const registered = []
+		const ctx = {
+			sessions: { get: () => ({ header: { cwd: work } }) },
+			workspaceRegistry: {
+				resolveByPath: async () => ({ path: work }),
+				list: () => [{ path: work }]
+			},
+			webServer: {
+				register: (opts) => {
+					registered.push(opts)
+					return () => {}
+				}
+			},
+			inject: () => () => {},
+			effect: (fn) => fn()
+		}
+		apply(ctx, {})
+		const handler = registered[0].handler
+
+		async function post(path, body) {
+			const listeners = {}
+			const chunks = []
+			let status = 0
+			const req = {
+				method: 'POST',
+				url: path,
+				on: (ev, cb) => {
+					listeners[ev] = cb
+					return req
+				},
+				destroy: () => {}
+			}
+			const done = handler(req, {
+				writeHead: (s) => {
+					status = s
+				},
+				end: (b) => chunks.push(b)
+			})
+			listeners.data(Buffer.from(JSON.stringify({ sessionId: 's1', ...body })))
+			listeners.end()
+			await done
+			return { status: status, body: JSON.parse(chunks.join('')) }
+		}
+
+		const preview = await post('/git-lite/push/preview', {})
+		assert.equal(preview.status, 200)
+		assert.equal(preview.body.ok, true)
+		const plan = preview.body.value
+		assert.equal(plan.mode, 'publish')
+		assert.equal(plan.remote, 'origin')
+		assert.equal(plan.target, 'origin/topic')
+		assert.equal(plan.targetRef, 'refs/remotes/origin/topic')
+		assert.equal(plan.newBranch, true)
+		// 远端还没有 topic，本地两条提交对远端来说都是新的。
+		assert.equal(plan.ahead, 2)
+		assert.equal(plan.behind, 0)
+		assert.deepEqual(plan.commits.map((c) => c.subject), ['c2 topic', 'c1 base'])
+
+		const confirmed = await post('/git-lite/push/confirm', { token: plan.token })
+		assert.equal(confirmed.status, 200)
+		assert.equal(confirmed.body.ok, true)
+		assert.equal(confirmed.body.value.published, true)
+		assert.equal(confirmed.body.value.branch, 'topic')
+		assert.equal(confirmed.body.value.upstream, 'origin/topic')
+		assert.equal(confirmed.body.value.summary.upToDate, false)
+
+		assert.equal(
+			git(work, 'rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{upstream}'),
+			'origin/topic'
+		)
+		assert.equal(git(bare, 'rev-parse', 'refs/heads/topic'), git(work, 'rev-parse', 'HEAD'))
+
+		const status = await post('/git-lite/status', {})
+		assert.equal(status.body.value.upstream, 'origin/topic')
+		assert.equal(status.body.value.ahead, 0)
+
+		// 远端分支被删、upstream 引用被 prune：仍然可以重新发布，目标沿用原配置
+		// （branch.topic.remote / merge），而不是悄悄换到别的远端。
+		git(bare, 'update-ref', '-d', 'refs/heads/topic')
+		git(work, 'fetch', '-q', '--prune')
+		const goneStatus = await post('/git-lite/status', {})
+		assert.equal(goneStatus.body.value.upstream, 'origin/topic')
+		assert.equal(goneStatus.body.value.upstreamMissing, true)
+
+		const gonePreview = await post('/git-lite/push/preview', {})
+		assert.equal(gonePreview.body.ok, true)
+		assert.equal(gonePreview.body.value.mode, 'publish')
+		assert.equal(gonePreview.body.value.target, 'origin/topic')
+		assert.equal(gonePreview.body.value.newBranch, true)
+
+		const goneConfirm = await post('/git-lite/push/confirm', {
+			token: gonePreview.body.value.token
+		})
+		assert.equal(goneConfirm.body.ok, true)
+		assert.equal(goneConfirm.body.value.upstream, 'origin/topic')
+		assert.equal(git(bare, 'rev-parse', 'refs/heads/topic'), git(work, 'rev-parse', 'HEAD'))
+
+		// 发布完成后就回到普通推送：预览走 upstream 模式，确认执行无参数 git push。
+		git(work, 'commit', '-qm', 'c3 after publish', '--allow-empty')
+		const afterPublishPreview = await post('/git-lite/push/preview', {})
+		assert.equal(afterPublishPreview.body.ok, true)
+		assert.equal(afterPublishPreview.body.value.mode, 'upstream')
+		assert.equal(afterPublishPreview.body.value.upstream, 'origin/topic')
+		assert.equal(afterPublishPreview.body.value.ahead, 1)
+
+		const afterPublishConfirm = await post('/git-lite/push/confirm', {
+			token: afterPublishPreview.body.value.token
+		})
+		assert.equal(afterPublishConfirm.body.ok, true)
+		assert.equal(afterPublishConfirm.body.value.upstream, 'origin/topic')
+		assert.equal(afterPublishConfirm.body.value.published, undefined)
+		assert.equal(git(bare, 'rev-parse', 'refs/heads/topic'), git(work, 'rev-parse', 'HEAD'))
+
+		// token 单次使用：同一个预览不能确认两次。
+		const reuse = await post('/git-lite/push/confirm', { token: plan.token })
+		assert.equal(reuse.body.ok, false)
+		assert.equal(reuse.body.error.code, 'confirm-expired')
+	} finally {
+		rmSync(root, { recursive: true, force: true })
+	}
+})
+
 // ── LLM 调用契约 ───────────────────────────────────────────────
 // 真实故障：本插件曾把 messages 写成 [{ role: 'user', content: '<裸字符串>' }]，
 // 适配器 serializeMessages 会对 content 调 .filter() → 直接抛错；runtime 把该失败
@@ -896,6 +1055,15 @@ check('fetchCoverage：完整 / 单分支 / 带排除的 refspec', () => {
 		fetchCoverage(['+refs/heads/*:refs/remotes/origin/*', '^refs/heads/secret']),
 		'partial'
 	)
+})
+
+check('pickPublishRemote：origin 优先 / 唯一 remote / 多个且无 origin 不猜', () => {
+	assert.equal(pickPublishRemote(['origin', 'fork']), 'origin')
+	assert.equal(pickPublishRemote(['fork', 'origin']), 'origin')
+	assert.equal(pickPublishRemote(['upstream']), 'upstream')
+	assert.equal(pickPublishRemote(['a', 'b']), null, '多个 remote 且没有 origin 时必须拒绝自动选择')
+	assert.equal(pickPublishRemote([]), null)
+	assert.equal(pickPublishRemote(undefined), null)
 })
 
 check('splitRemoteRef：remote 名字本身含斜杠时按最长前缀拆分', () => {

@@ -40,6 +40,31 @@
   不做任何事，避免每 3 秒重载一次。只刷新 status 会出现「ahead/behind 变了但
   历史还是旧的」。
 
+## 首次推送：publish 模式
+
+普通 push 只推「当前分支到已有上游」，这是 force push 结构上不可能的基石。
+但本地新建分支、或远端分支被删后 upstream 配置还在时，`ahead` 恒为 0
+（porcelain 不输出 `# branch.ab`），按钮会永久灰掉 —— 这不是可接受的终态。
+所以 `/push/preview` 增加 publish 模式：
+
+- **触发条件**：没有 upstream，或 `@{upstream}` 解析失败（配置还在但引用被
+  prune / 删除）。后者由 `parseStatus` 的 `upstreamMissing` 标出：porcelain v2
+  没有单独的 gone 字段，但「有 `# branch.upstream`、没有 `# branch.ab`」就是引用丢了。
+- **目标选择不猜**：`origin` 优先；没有 origin 时只有唯一 remote 才自动选；
+  多个 remote 且没有 origin 就明确报错，让用户回终端指定，不静默推到错误远端。
+  gone 的情况沿用 `branch.<name>.remote` / `branch.<name>.merge`，推回原来的
+  远端分支，而不是按当前分支名另建一个。
+- **预览**：返回 `mode: 'publish'`、目标 `target`、`newBranch`、ahead/behind
+  与提交列表。远端还没有目标分支时，本地历史对远端来说全是新的，`ahead` 取
+  `rev-list --count HEAD`；预览列表上限 100 条，总条数仍完整返回。
+- **确认**：token 里带 `targetRef` 与 `targetSha`，确认时除 branch / HEAD /
+  remote 外还要校验目标引用没有在预览后出现、移动或消失（防 TOCTOU）。真正的
+  命令是 `git push --set-upstream <remote> HEAD:refs/heads/<targetBranch>`：
+  `--set-upstream` 只建立上游，显式 refspec 只决定推到哪个远端分支，没有
+  `--force` / `+` 入口；`assertNoForce()` 照旧兜底。
+- 成功摘要仍用目标引用前后的 sha：新建分支时 before 为 null，不能报「远端已是
+  最新」。返回 `published: true` 让客户端把「已推送」换成「已发布」。
+
 ## 目标运行时：0.2.1-rc.2，Web 与桌面同一套组合
 
 0.3.0 的目标运行时是 **DSH `0.2.1-rc.2`**，它沿用 0.2.0-rc.2 的同一套侧边栏契约。
@@ -194,9 +219,9 @@ description: pkg.meta?.description === undefined ? undefined  : resolveText(pkg.
 
 2. **仓库根二次校验。** 上面第 3 道闸门挡住「工作区是某个更大仓库的子目录」这种越界。
 
-3. **force push 结构上不可能。** push 的 argv 由宿主内部构造（无参数 `git push`，只推当前分支到其上游），客户端无法注入参数；另有 `assertNoForce()` 做纵深断言。
+3. **force push 结构上不可能。** 普通 push 的 argv 是内部构造的无参数 `git push`（只推当前分支到其上游）；publish 模式也只有 `--set-upstream` + 显式 refspec，没有 force 入口。客户端无法注入参数，另有 `assertNoForce()` 做纵深断言。
 
-4. **两阶段 push 确认，比通用审批更严。** 没有用 `ctx.approval`：它的契约要求一个打开的 agent 轮次，而本插件的 push 是 UI 触发的、没有 open turn。两阶段确认的做法是：预览返回 HEAD sha / 分支 / 上游 / ahead 数 / commit 列表 + 一次性短期 token；确认时校验 token 未用过、未过期，且 **HEAD 与分支仍与预览时一致**（防 TOCTOU），不一致就拒绝。
+4. **两阶段 push 确认，比通用审批更严。** 没有用 `ctx.approval`：它的契约要求一个打开的 agent 轮次，而本插件的 push 是 UI 触发的、没有 open turn。两阶段确认的做法是：预览返回 HEAD sha / 分支 / 上游（publish 时是目标引用与是否新分支）/ ahead 数 / commit 列表 + 一次性短期 token；确认时校验 token 未用过、未过期，且 **HEAD 与分支仍与预览时一致**（防 TOCTOU），publish 还额外核对远端与目标引用，不一致就拒绝。
 
 5. **`GIT_TERMINAL_PROMPT=0`。** 无终端的 web 进程里，缺凭据立刻失败，不会挂死等输入。
 
@@ -363,7 +388,7 @@ stash 后文件列表整组消失。所以成功提示再常驻就是冗余 —�
 | pull | 前后 `rev-parse HEAD`（相同即「已是最新」）+ `merge-base --is-ancestor` 判快进/合并 + `diff --numstat` 出改动量 |
 | fetch | 前后 `for-each-ref refs/remotes` 快照对比（改了 / 新增 / 删除都算一次引用更新） |
 | stash | 前后 `rev-parse refs/stash`（`push` 存进去了 / `pop` 丢掉了一条） |
-| push | 前后上游跟踪引用的 sha（没变就是「远端已是最新」） |
+| push / publish | 前后上游（或发布目标）跟踪引用的 sha；publish 新建分支时 before 为 null，不能报「远端已是最新」 |
 
 `Fast-forward`、`files changed`、`Everything up-to-date`、`No local changes to save`
 都会按 `LANG` 被翻译（装了 git-lang 的 Linux 就是中文），拿英文正则去匹配会在那些机器上
@@ -671,8 +696,8 @@ if(why!=="OK 有仓库")console.log(why.padEnd(16),c)}}catch{}}}' | sort | uniq 
 ```sh
 node --check lib/index.js
 node --check lib/client.js
-node tests/host-smoke.mjs     # 68 项：porcelain v2 解析、冲突闸门、分支/远端 ref 解析、fetch coverage、compare 计数与关系、远端引用指纹、鉴权拒绝面、包含关系回退、log/show 解析、路由装配（含 /compare）、LLM 消息契约与终止分片、打包契约（dsh.bundle.patch / dsh.client / files / peer 闸门 与 cordis.patch.yml 自洽、locale 语言映射）
-node tests/client-smoke.mjs   # 79 项：注册点与 disposer + 注册冲突重试 + 0.2.0 契约闸门 + 委派路径真点击 + 胶囊状态机 + clamp + 日期分组 + 组头批量按钮与冲突态 + 分支分组/远端检出 + 上游对比/远端独有区 + 刷新链路 + 同步键 + 渲染层检查 + zh/en 字典键对齐
+node tests/host-smoke.mjs     # 71 项：porcelain v2 解析、upstreamMissing、冲突闸门、分支/远端 ref 解析、fetch coverage、compare 计数与关系、远端引用指纹、发布远端选择、鉴权拒绝面、包含关系回退、log/show 解析、路由装配（含 /compare 与 publish 预览/确认真 git 集成）、LLM 消息契约与终止分片、打包契约（dsh.bundle.patch / dsh.client / files / peer 闸门 与 cordis.patch.yml 自洽、locale 语言映射）
+node tests/client-smoke.mjs   # 83 项：注册点与 disposer + 注册冲突重试 + 0.2.0 契约闸门 + 委派路径真点击 + 胶囊状态机 + clamp + 日期分组 + 组头批量按钮与冲突态 + 分支分组/远端检出 + 上游对比/远端独有区 + 发布按钮/弹层状态 + 刷新链路 + 同步键 + 渲染层检查 + zh/en 字典键对齐
 npm test                      # 两个都跑
 ```
 
@@ -695,5 +720,7 @@ npm test                      # 两个都跑
 | `冲突委派：同样走 conversation.send` | 同上，且文案必须含「不要提交」 |
 | `会话通道不可用时立刻报错，而不是假装成功` | 没有 conversation 时不抛、也不误报成功 |
 | `打包契约：dsh.bundle.patch / dsh.client / exports 与 cordis.patch.yml 自洽` | 清单写错导致插件**静默不加载**（症状与「装错 profile」「没重启」一模一样，最难查）；顺带钉住 peer 里必须有一个 `@deepseek-ai/dsh*`，否则兼容性闸门形同虚设 |
-| `同步键覆盖 HEAD / 分支 / 上游 / ahead / behind / remoteRefs` | 外部 `git fetch` 后只有 ahead/behind 或远端引用变化时，历史与对比不刷新（只比较 HEAD 的旧实现；含无上游的临时对比） |
+| `同步键覆盖 HEAD / 分支 / 上游 / ahead / behind / upstreamMissing / remoteRefs` | 外部 `git fetch` 后只有 ahead/behind 或远端引用变化时，历史与对比不刷新（只比较 HEAD 的旧实现；含无上游的临时对比） |
+| `集成：/push/preview + /push/confirm 发布无上游分支（真实 git）` | 无上游时按钮永久灰掉；publish 必须真的创建远端分支、设置 upstream，并在 gone 后能按原目标重建 |
+| `无上游 / 上游丢失时按钮变「发布分支」，不再因 ahead=0 静默禁用` | 客户端只看 ahead 就禁用按钮；发布 / 推送 / 尚无提交 / 游离 HEAD 的文案与可点状态回归 |
 

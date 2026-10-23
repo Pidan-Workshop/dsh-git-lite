@@ -788,6 +788,120 @@ check('用户自己的提交按钮排最后，且三个动作各带说明', () =
 	}
 })
 
+/** 只注入 status，用于检查顶部操作条的按钮状态。 */
+function renderPushStatus(statusJson) {
+	return renderPanel((s) =>
+		s.replace(
+			'var [status, setStatus] = React.useState(null)',
+			'var [status, setStatus] = React.useState(' + statusJson + ')'
+		)
+	)
+}
+
+/** 找到顶部操作条里的推送 / 发布按钮（两种状态共用同一个位置）。 */
+function pushButton(panel) {
+	const buttons = collect(panel).nodes.filter((n) => n.type === 'button')
+	return buttons.find((b) => {
+		const label = collect(b).texts.join('')
+		return label.indexOf('发布分支') === 0 || label.indexOf('推送') === 0
+	})
+}
+
+check('无上游 / 上游丢失时按钮变「发布分支」，不再因 ahead=0 静默禁用', () => {
+	const publish = pushButton(renderPushStatus(
+		'{branch:"topic",head:"a1",upstream:null,ahead:0,behind:0,files:[]}'
+	))
+	assert.ok(publish, '无上游时找不到「发布分支」按钮')
+	assert.equal(collect(publish).texts.join(''), '发布分支')
+	assert.equal(publish.props.disabled, false, '无上游且有提交时发布按钮必须可点')
+	// Btn 把 primary 渲染成 data-primary 属性，而不是透传 prop。
+	assert.equal(publish.props['data-primary'], '')
+	assert.match(String(publish.props.title), /远端/)
+
+	// upstream 配置还在、但远端引用被删（gone）同样可以重新发布。
+	const gone = pushButton(renderPushStatus(
+		'{branch:"main",head:"a1",upstream:"origin/main",upstreamMissing:true,ahead:0,behind:0,files:[]}'
+	))
+	assert.equal(collect(gone).texts.join(''), '发布分支')
+	assert.equal(gone.props.disabled, false)
+
+	// 有上游、ahead=0：仍然禁用，并给出原因（不是无声灰掉）。
+	const nothing = pushButton(renderPushStatus(
+		'{branch:"main",head:"a1",upstream:"origin/main",ahead:0,behind:0,files:[]}'
+	))
+	assert.equal(collect(nothing).texts.join(''), '推送')
+	assert.equal(nothing.props.disabled, true)
+	assert.match(String(nothing.props.title), /没有待推送/)
+
+	const ahead = pushButton(renderPushStatus(
+		'{branch:"main",head:"a1",upstream:"origin/main",ahead:2,behind:0,files:[]}'
+	))
+	assert.equal(collect(ahead).texts.join(''), '推送 ↑2')
+	assert.equal(ahead.props.disabled, false)
+})
+
+check('尚无提交 / 游离 HEAD 时按钮禁用并说明原因', () => {
+	const unborn = pushButton(renderPushStatus(
+		'{branch:"topic",head:null,upstream:null,ahead:0,behind:0,files:[]}'
+	))
+	assert.equal(unborn.props.disabled, true)
+	assert.match(String(unborn.props.title), /尚无提交/)
+
+	const detached = pushButton(renderPushStatus(
+		'{branch:null,head:"a1",upstream:"origin/main",ahead:2,behind:0,files:[]}'
+	))
+	assert.equal(detached.props.disabled, true)
+	assert.match(String(detached.props.title), /游离/)
+})
+
+/** 注入 status + 预览计划，直接渲染发布 / 推送确认弹层。 */
+function renderPushDialog(planJson) {
+	return renderPanel((s) =>
+		s
+			.replace(
+				'var [status, setStatus] = React.useState(null)',
+				'var [status, setStatus] = React.useState({branch:"topic",head:"a1",upstream:null,ahead:0,behind:0,files:[]})'
+			)
+			.replace(
+				'var [confirmPush, setConfirmPush] = React.useState(null)',
+				'var [confirmPush, setConfirmPush] = React.useState(' + planJson + ')'
+			)
+	)
+}
+
+check('发布弹层：标题 / 目标远端 / 新分支说明 / 确认按钮都跟着模式走', () => {
+	const plan =
+		"{mode:'publish',branch:'topic',target:'origin/topic',targetRef:'refs/remotes/origin/topic',newBranch:true,ahead:2,behind:0,head:'a1b2c3',commits:[{sha:'a1',subject:'c1'},{sha:'b2',subject:'c2'}],commitsTruncated:false}"
+	const panel = renderPushDialog(plan)
+	const dialog = collect(panel).nodes.find(
+		(n) => n.props && n.props['data-git-lite-push-dialog'] === ''
+	)
+	assert.ok(dialog, '找不到发布弹层')
+	assert.equal(dialog.props['data-git-lite-push-mode'], 'publish')
+	const text = collect(dialog).texts.join('|')
+	assert.match(text, /确认发布分支/)
+	assert.match(text, /topic → origin\/topic/)
+	assert.match(text, /远端还没有这个分支/)
+	assert.match(text, /确认发布/)
+
+	const buttons = collect(dialog).nodes.filter((n) => n.type === 'button')
+	assert.ok(buttons.some((b) => collect(b).texts.join('') === '确认发布'), '确认按钮应写「确认发布」')
+})
+
+check('普通推送弹层仍显示「确认推送」', () => {
+	const plan =
+		"{mode:'upstream',branch:'main',upstream:'origin/main',ahead:1,behind:0,head:'a1b2c3',commits:[{sha:'a1',subject:'c1'}],commitsTruncated:false}"
+	const panel = renderPushDialog(plan)
+	const dialog = collect(panel).nodes.find(
+		(n) => n.props && n.props['data-git-lite-push-dialog'] === ''
+	)
+	assert.equal(dialog.props['data-git-lite-push-mode'], 'push')
+	const text = collect(dialog).texts.join('|')
+	assert.match(text, /确认推送/)
+	assert.match(text, /main → origin\/main/)
+	assert.doesNotMatch(text, /远端还没有这个分支/)
+})
+
 /** 渲染变更模式（注入一份 status），供批量按钮与冲突分组的用例复用。 */
 function renderChanges(filesJson, scOverrides) {
 	return renderPanel(
@@ -1180,7 +1294,7 @@ check('刷新链路：fetch / checkout / push 之后历史会重载，而不是�
 	assert.match(src, /\[\s*statusKey\s*\]/)
 })
 
-check('同步键覆盖 HEAD / 分支 / 上游 / ahead / behind / remoteRefs，事实不变时保持稳定', () => {
+check('同步键覆盖 HEAD / 分支 / 上游 / ahead / behind / upstreamMissing / remoteRefs，事实不变时保持稳定', () => {
 	// 真机症状：在终端里 git fetch 完，头部 ahead/behind 变了，但历史顶部的
 	// 对比条和「远端独有」区还是旧的，直到手动点刷新。
 	const { statusSyncKey } = mod.__internals
@@ -1196,6 +1310,11 @@ check('同步键覆盖 HEAD / 分支 / 上游 / ahead / behind / remoteRefs，�
 		'同一个 sha 上切到另一个分支也必须换 key'
 	)
 	assert.notEqual(statusSyncKey(Object.assign({}, base, { upstream: 'origin/next' })), key, '上游改绑必须换 key')
+	assert.notEqual(
+		statusSyncKey(Object.assign({}, base, { upstreamMissing: true })),
+		key,
+		'upstream 引用丢失（可重新发布）也必须换 key'
+	)
 	// 没有 upstream 的临时对比：ahead/behind 恒为 0，只能靠远端引用指纹发现变化。
 	assert.notEqual(
 		statusSyncKey({ head: 'a1', branch: 'feature', upstream: null, ahead: 0, behind: 0, remoteRefs: 'r2' }),
@@ -1376,7 +1495,8 @@ const SUMMARY_T = {
 	stashNothing: '没有需要储藏的改动',
 	stashPopped: '已恢复储藏',
 	pushUpToDate: '推送：远端已是最新',
-	pushDone: '已推送 {branch} → {upstream}'
+	pushDone: '已推送 {branch} → {upstream}',
+	publishDone: '已发布 {branch} → {upstream}'
 }
 
 check('describeSummary：pull 的四种模式', () => {
@@ -1408,6 +1528,15 @@ check('describeSummary：fetch / stash / push', () => {
 	assert.equal(
 		describeSummary(SUMMARY_T, { summary: { kind: 'push', upToDate: false }, branch: 'main', upstream: 'origin/main' }),
 		'已推送 main → origin/main'
+	)
+	assert.equal(
+		describeSummary(SUMMARY_T, {
+			summary: { kind: 'push', upToDate: false },
+			branch: 'topic',
+			upstream: 'origin/topic',
+			published: true
+		}),
+		'已发布 topic → origin/topic'
 	)
 	assert.equal(describeSummary(SUMMARY_T, { summary: { kind: 'push', upToDate: true } }), '推送：远端已是最新')
 	// 认不出来（或宿主没给摘要）一律 null，由调用方回退到原始输出

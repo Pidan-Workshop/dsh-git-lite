@@ -1,6 +1,6 @@
 {
   "meta": {
     "title": "Git panel",
-    "description": "Lite Git tab in the right sidebar driven by your local git: changes, inline diff, fetch and pull, two-step push, commit, branches (local/remote), upstream comparison and stash."
+    "description": "Lite Git tab in the right sidebar driven by your local git: changes, inline diff, fetch and pull, two-step push and branch publishing, commit, branches (local/remote), upstream comparison and stash."
   }
 }
