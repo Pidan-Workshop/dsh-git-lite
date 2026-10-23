@@ -1,0 +1,89 @@
+name: Release
+
+# 推 v* tag 时自动创建 GitHub Release；workflow_dispatch 用来补建
+# 在本 workflow 存在之前就已经推过的 tag（例如 v0.4.0）。
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: '要发布的历史 tag，例如 v0.4.0'
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Resolve tag
+        id: tag
+        shell: bash
+        env:
+          INPUT_TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          tag="${INPUT_TAG:-$GITHUB_REF_NAME}"
+          if [[ ! "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z.-]+)?$ ]]; then
+            echo "::error::unexpected tag: $tag"
+            exit 1
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout tag
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.tag.outputs.tag }}
+          fetch-depth: 0
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Verify tag and package version
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ steps.tag.outputs.tag }}
+        run: |
+          set -euo pipefail
+          # --notes-from-tag 读取 annotated tag 的 message；轻量 tag 直接拒绝。
+          if [[ "$(git cat-file -t "$RELEASE_TAG")" != "tag" ]]; then
+            echo "::error::tag $RELEASE_TAG must be annotated (git tag -a)"
+            exit 1
+          fi
+          tag_version="${RELEASE_TAG#v}"
+          package_version="$(node -p "require('./package.json').version")"
+          if [[ "$tag_version" != "$package_version" ]]; then
+            echo "::error::tag $RELEASE_TAG does not match package.json version $package_version"
+            exit 1
+          fi
+
+      - name: Test
+        run: npm test
+
+      - name: Create GitHub release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ steps.tag.outputs.tag }}
+        run: |
+          set -euo pipefail
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            echo "Release $RELEASE_TAG already exists; leaving it untouched."
+            exit 0
+          fi
+          args=(create "$RELEASE_TAG" --verify-tag --title "dsh-git-lite $RELEASE_TAG" --notes-from-tag)
+          tag_version="${RELEASE_TAG#v}"
+          if [[ "$tag_version" == *-* ]]; then
+            args+=(--prerelease)
+          fi
+          gh release "${args[@]}"

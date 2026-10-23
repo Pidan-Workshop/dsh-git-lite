@@ -81,6 +81,12 @@ git tag -a v0.4.0 -m 'dsh-git-lite v0.4.0 — DSH 0.2.1-rc.2（Web + 桌面）'
 git push origin v0.4.0
 ```
 
+推 tag 会触发 `.github/workflows/release.yml`：先跑 `npm test`，再用 annotated tag 的
+message 创建 GitHub Release。tag 必须是 annotated（`git tag -a`），且去掉 `v` 后必须
+等于 `package.json` 的 version，否则 workflow 会失败。workflow 在本仓库合并之前就已经
+推过的 tag 不会追溯触发，可以在 Actions → Release → Run workflow 里填 tag 手动补建
+（例如 `v0.4.0`）。
+
 ### 6. 发布后验证
 
 ```sh
